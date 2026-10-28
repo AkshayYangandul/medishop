@@ -1,0 +1,785 @@
+-- ==============================================================================
+-- MediShop: Medical Shop Management System
+-- Phase 2: Final Reviewed Database Schema & Security Foundation Migration
+-- Version: 20261027000002_initial_schema_final_review.sql
+-- Status: Review Copy (All previous migration versions preserved intact)
+-- ==============================================================================
+
+-- 1. EXTENSIONS
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- 2. ENUMS & CUSTOM TYPES (Idempotent definitions)
+DO $$ BEGIN
+  CREATE TYPE public.app_role AS ENUM ('admin', 'pharmacist');
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+  CREATE TYPE public.movement_type AS ENUM (
+    'purchase_in',
+    'sale_out',
+    'return_in',
+    'return_to_supplier',
+    'expired_disposal',
+    'damaged_write_off',
+    'inventory_adjustment'
+  );
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+  CREATE TYPE public.payment_method AS ENUM (
+    'cash',
+    'upi',
+    'card',
+    'credit',
+    'split'
+  );
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+  CREATE TYPE public.payment_status AS ENUM (
+    'paid',
+    'pending',
+    'partial',
+    'cancelled'
+  );
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
+
+-- ==============================================================================
+-- 3. UTILITY & SECURITY FUNCTIONS
+-- ==============================================================================
+
+-- Standard trigger function to auto-update 'updated_at' columns
+CREATE OR REPLACE FUNCTION public.handle_updated_at()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$;
+
+-- Secure helper function to check if the current user has 'admin' role
+-- STABLE + SECURITY DEFINER + SET search_path = '' ensures protection against
+-- search path hijacking and avoids infinite recursion during RLS evaluation.
+CREATE OR REPLACE FUNCTION public.is_admin()
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.profiles
+    WHERE id = auth.uid()
+      AND role = 'admin'
+      AND is_active = true
+  );
+$$;
+
+-- Secure helper function to check if user is an active staff member (admin or pharmacist)
+CREATE OR REPLACE FUNCTION public.is_staff()
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.profiles
+    WHERE id = auth.uid()
+      AND is_active = true
+  );
+$$;
+
+-- Restrict function execution to authenticated users
+REVOKE EXECUTE ON FUNCTION public.is_admin() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.is_admin() TO authenticated;
+
+REVOKE EXECUTE ON FUNCTION public.is_staff() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.is_staff() TO authenticated;
+
+-- ==============================================================================
+-- 4. TABLE DEFINITIONS
+-- ==============================================================================
+
+-- ------------------------------------------------------------------------------
+-- Table 1: PROFILES (Staff profiles linked to Supabase auth.users)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.profiles (
+  id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  full_name text NOT NULL,
+  role public.app_role NOT NULL DEFAULT 'pharmacist',
+  phone text,
+  is_active boolean NOT NULL DEFAULT false, -- Defaults to inactive for approval
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+DROP TRIGGER IF EXISTS set_profiles_updated_at ON public.profiles;
+CREATE TRIGGER set_profiles_updated_at
+  BEFORE UPDATE ON public.profiles
+  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+
+-- SECURITY TRIGGER: Enforces that non-admin users cannot elevate their role or reactivate themselves
+CREATE OR REPLACE FUNCTION public.enforce_profile_security()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  -- If the actor executing the update is NOT an active admin:
+  IF NOT public.is_admin() THEN
+    -- Forbid role changes
+    IF NEW.role IS DISTINCT FROM OLD.role THEN
+      RAISE EXCEPTION 'Unauthorized: Only store administrators can modify user roles.';
+    END IF;
+    -- Forbid is_active status changes
+    IF NEW.is_active IS DISTINCT FROM OLD.is_active THEN
+      RAISE EXCEPTION 'Unauthorized: Only store administrators can alter account activation status.';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS check_profile_security ON public.profiles;
+CREATE TRIGGER check_profile_security
+  BEFORE UPDATE ON public.profiles
+  FOR EACH ROW EXECUTE FUNCTION public.enforce_profile_security();
+
+-- Auto-provision profile on auth.users signup with First-User Admin Bootstrap
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  user_count integer;
+  assigned_role public.app_role;
+  assigned_active boolean;
+BEGIN
+  -- Count existing profiles to determine if this is the initial project setup
+  SELECT COUNT(*) INTO user_count FROM public.profiles;
+
+  IF user_count = 0 THEN
+    -- First registered user becomes the initial active Administrator
+    assigned_role := 'admin';
+    assigned_active := true;
+  ELSE
+    -- All subsequent signups default to inactive Pharmacists requiring admin approval
+    assigned_role := 'pharmacist';
+    assigned_active := false;
+  END IF;
+
+  INSERT INTO public.profiles (id, full_name, role, is_active)
+  VALUES (
+    NEW.id,
+    COALESCE(
+      NEW.raw_user_meta_data->>'full_name',
+      CASE WHEN user_count = 0 THEN 'Pharmacy Administrator' ELSE 'Pharmacy Staff' END
+    ),
+    assigned_role,
+    assigned_active
+  );
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- ------------------------------------------------------------------------------
+-- Table 2: CATEGORIES (Therapeutic drug classes & storage requirements)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.categories (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL UNIQUE,
+  slug text NOT NULL UNIQUE,
+  description text,
+  storage_temperature text DEFAULT 'Room Temperature',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+DROP TRIGGER IF EXISTS set_categories_updated_at ON public.categories;
+CREATE TRIGGER set_categories_updated_at
+  BEFORE UPDATE ON public.categories
+  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+
+-- ------------------------------------------------------------------------------
+-- Table 3: BRANDS (Pharmaceutical manufacturers & marketing companies)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.brands (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL UNIQUE,
+  manufacturer text,
+  contact_email text,
+  contact_phone text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+DROP TRIGGER IF EXISTS set_brands_updated_at ON public.brands;
+CREATE TRIGGER set_brands_updated_at
+  BEFORE UPDATE ON public.brands
+  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+
+-- ------------------------------------------------------------------------------
+-- Table 4: MEDICINES (Master drug catalogue & clinical classifications)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.medicines (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  generic_name text,
+  category_id uuid NOT NULL REFERENCES public.categories(id) ON DELETE RESTRICT,
+  brand_id uuid REFERENCES public.brands(id) ON DELETE SET NULL,
+  dosage_form text NOT NULL, -- Tablet, Capsule, Syrup, Injection, Ointment, Drops, Inhaler, Other
+  strength text,            -- e.g. 500mg, 10ml, 250mg/5ml
+  unit text NOT NULL DEFAULT 'Strip', -- Strip, Bottle, Box, Vial, Piece
+  hsn_code text,
+  requires_prescription boolean NOT NULL DEFAULT false, -- Schedule H/X compliance flag
+  min_stock_alert integer NOT NULL DEFAULT 10 CHECK (min_stock_alert >= 0),
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+DROP TRIGGER IF EXISTS set_medicines_updated_at ON public.medicines;
+CREATE TRIGGER set_medicines_updated_at
+  BEFORE UPDATE ON public.medicines
+  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+
+-- ------------------------------------------------------------------------------
+-- Table 5: SUPPLIERS (Wholesale distributors, pharma stockists, licenses)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.suppliers (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  contact_person text,
+  phone text NOT NULL,
+  email text,
+  address text,
+  gstin text,
+  drug_license_no text,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+DROP TRIGGER IF EXISTS set_suppliers_updated_at ON public.suppliers;
+CREATE TRIGGER set_suppliers_updated_at
+  BEFORE UPDATE ON public.suppliers
+  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+
+-- ------------------------------------------------------------------------------
+-- Table 6: PURCHASES (Inward purchase bills from suppliers)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.purchases (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  invoice_no text NOT NULL, -- Vendor bill number
+  supplier_id uuid NOT NULL REFERENCES public.suppliers(id) ON DELETE RESTRICT,
+  purchase_date date NOT NULL DEFAULT CURRENT_DATE,
+  total_amount numeric(12,2) NOT NULL CHECK (total_amount >= 0),
+  tax_amount numeric(12,2) NOT NULL DEFAULT 0.00 CHECK (tax_amount >= 0),
+  discount_amount numeric(12,2) NOT NULL DEFAULT 0.00 CHECK (discount_amount >= 0),
+  net_amount numeric(12,2) NOT NULL CHECK (net_amount >= 0),
+  payment_status public.payment_status NOT NULL DEFAULT 'paid',
+  notes text,
+  created_by uuid REFERENCES public.profiles(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_supplier_invoice UNIQUE(supplier_id, invoice_no)
+);
+
+DROP TRIGGER IF EXISTS set_purchases_updated_at ON public.purchases;
+CREATE TRIGGER set_purchases_updated_at
+  BEFORE UPDATE ON public.purchases
+  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+
+-- ------------------------------------------------------------------------------
+-- Table 7: BATCHES (Medicine batches tracking lot, expiry, costs, stock)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.batches (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  medicine_id uuid NOT NULL REFERENCES public.medicines(id) ON DELETE RESTRICT,
+  supplier_id uuid REFERENCES public.suppliers(id) ON DELETE SET NULL,
+  batch_no text NOT NULL,
+  mfg_date date,
+  expiry_date date NOT NULL,
+  purchase_cost numeric(12,2) NOT NULL CHECK (purchase_cost >= 0), -- Cost per unit
+  mrp numeric(12,2) NOT NULL CHECK (mrp >= 0),                     -- Maximum retail price
+  selling_price numeric(12,2) NOT NULL CHECK (selling_price >= 0), -- Counter selling price
+  initial_quantity integer NOT NULL CHECK (initial_quantity >= 0),
+  current_quantity integer NOT NULL DEFAULT 0 CHECK (current_quantity >= 0),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT check_expiry_after_mfg CHECK (mfg_date IS NULL OR expiry_date > mfg_date),
+  CONSTRAINT check_selling_price_within_mrp CHECK (selling_price <= mrp),
+  CONSTRAINT uq_medicine_batch UNIQUE(medicine_id, batch_no),
+  CONSTRAINT uq_batch_id_medicine UNIQUE(id, medicine_id) -- Enables composite foreign keys in items tables
+);
+
+DROP TRIGGER IF EXISTS set_batches_updated_at ON public.batches;
+CREATE TRIGGER set_batches_updated_at
+  BEFORE UPDATE ON public.batches
+  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+
+-- ------------------------------------------------------------------------------
+-- Table 8: PURCHASE_ITEMS (Line items in a purchase bill linking batch & medicine)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.purchase_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  purchase_id uuid NOT NULL REFERENCES public.purchases(id) ON DELETE CASCADE,
+  medicine_id uuid NOT NULL,
+  batch_id uuid NOT NULL,
+  quantity integer NOT NULL CHECK (quantity > 0),
+  unit_cost numeric(12,2) NOT NULL CHECK (unit_cost >= 0),
+  tax_rate numeric(5,2) NOT NULL DEFAULT 0.00 CHECK (tax_rate >= 0),
+  subtotal numeric(12,2) NOT NULL CHECK (subtotal >= 0),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  -- Relational integrity: Guarantees that batch_id strictly belongs to medicine_id
+  CONSTRAINT fk_purchase_item_batch_medicine
+    FOREIGN KEY (batch_id, medicine_id)
+    REFERENCES public.batches(id, medicine_id)
+    ON DELETE RESTRICT
+);
+
+-- ------------------------------------------------------------------------------
+-- Table 9: CUSTOMERS (Patients and recurring clients)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.customers (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  phone text UNIQUE,
+  email text,
+  address text,
+  doctor_name text,
+  allergies_or_notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+DROP TRIGGER IF EXISTS set_customers_updated_at ON public.customers;
+CREATE TRIGGER set_customers_updated_at
+  BEFORE UPDATE ON public.customers
+  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+
+-- ------------------------------------------------------------------------------
+-- Table 10: INVOICES (Sales receipts generated at counter POS)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.invoices (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  invoice_no text NOT NULL UNIQUE,
+  customer_id uuid REFERENCES public.customers(id) ON DELETE SET NULL,
+  total_amount numeric(12,2) NOT NULL CHECK (total_amount >= 0),
+  tax_amount numeric(12,2) NOT NULL DEFAULT 0.00 CHECK (tax_amount >= 0),
+  discount_amount numeric(12,2) NOT NULL DEFAULT 0.00 CHECK (discount_amount >= 0),
+  net_amount numeric(12,2) NOT NULL CHECK (net_amount >= 0),
+  payment_method public.payment_method NOT NULL DEFAULT 'cash',
+  payment_status public.payment_status NOT NULL DEFAULT 'paid',
+  doctor_prescription_ref text,
+  notes text,
+  created_by uuid REFERENCES public.profiles(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+DROP TRIGGER IF EXISTS set_invoices_updated_at ON public.invoices;
+CREATE TRIGGER set_invoices_updated_at
+  BEFORE UPDATE ON public.invoices
+  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+
+-- ------------------------------------------------------------------------------
+-- Table 11: INVOICE_ITEMS (Line items in a sale invoice with cost snapshot)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.invoice_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  invoice_id uuid NOT NULL REFERENCES public.invoices(id) ON DELETE CASCADE,
+  medicine_id uuid NOT NULL,
+  batch_id uuid NOT NULL,
+  quantity integer NOT NULL CHECK (quantity > 0),
+  unit_price numeric(12,2) NOT NULL CHECK (unit_price >= 0),
+  purchase_cost_at_sale numeric(12,2) NOT NULL CHECK (purchase_cost_at_sale >= 0), -- Snapshot for exact historical profit
+  tax_rate numeric(5,2) NOT NULL DEFAULT 0.00 CHECK (tax_rate >= 0),
+  discount_amount numeric(12,2) NOT NULL DEFAULT 0.00 CHECK (discount_amount >= 0),
+  subtotal numeric(12,2) NOT NULL CHECK (subtotal >= 0),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  -- Relational integrity: Guarantees that batch_id strictly belongs to medicine_id
+  CONSTRAINT fk_invoice_item_batch_medicine
+    FOREIGN KEY (batch_id, medicine_id)
+    REFERENCES public.batches(id, medicine_id)
+    ON DELETE RESTRICT
+);
+
+-- ------------------------------------------------------------------------------
+-- Table 12: EXPENSES (Store operational expenditures & petty cash)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.expenses (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  title text NOT NULL,
+  category text NOT NULL, -- Rent, Utilities, Salaries, Maintenance, Other
+  amount numeric(12,2) NOT NULL CHECK (amount > 0),
+  expense_date date NOT NULL DEFAULT CURRENT_DATE,
+  payment_method text NOT NULL DEFAULT 'cash',
+  receipt_url text,
+  notes text,
+  created_by uuid REFERENCES public.profiles(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+DROP TRIGGER IF EXISTS set_expenses_updated_at ON public.expenses;
+CREATE TRIGGER set_expenses_updated_at
+  BEFORE UPDATE ON public.expenses
+  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+
+-- ------------------------------------------------------------------------------
+-- Table 13: STOCK_MOVEMENTS (Immutable audit ledger of all inventory alterations)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.stock_movements (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  medicine_id uuid NOT NULL,
+  batch_id uuid NOT NULL,
+  movement_type public.movement_type NOT NULL,
+  quantity_change integer NOT NULL CHECK (quantity_change != 0), -- Positive for additions, negative for deductions
+  quantity_before integer NOT NULL CHECK (quantity_before >= 0),
+  quantity_after integer NOT NULL CHECK (quantity_after >= 0),
+  reference_id uuid, -- Pointer to invoice_id, purchase_id, etc.
+  reference_type text, -- 'invoice', 'purchase', 'manual_adjustment'
+  reason text,
+  created_by uuid REFERENCES public.profiles(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT fk_stock_movement_batch_medicine
+    FOREIGN KEY (batch_id, medicine_id)
+    REFERENCES public.batches(id, medicine_id)
+    ON DELETE RESTRICT
+);
+
+-- ------------------------------------------------------------------------------
+-- Table 14: AUDIT_LOGS (Immutable administrative activity log)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.audit_logs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid REFERENCES public.profiles(id) ON DELETE SET NULL,
+  action text NOT NULL, -- 'CREATE', 'UPDATE', 'DELETE', 'LOGIN', 'ROLE_CHANGE', 'PRICE_OVERRIDE'
+  table_name text NOT NULL,
+  record_id uuid,
+  old_data jsonb,
+  new_data jsonb,
+  ip_address text,
+  user_agent text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- ==============================================================================
+-- 5. PERFORMANCE & FEFO INDEXES
+-- ==============================================================================
+
+-- Medicines & Search Indexes
+CREATE INDEX IF NOT EXISTS idx_medicines_category ON public.medicines(category_id);
+CREATE INDEX IF NOT EXISTS idx_medicines_brand ON public.medicines(brand_id);
+CREATE INDEX IF NOT EXISTS idx_medicines_name ON public.medicines(name);
+CREATE INDEX IF NOT EXISTS idx_medicines_generic_name ON public.medicines(generic_name);
+CREATE INDEX IF NOT EXISTS idx_medicines_min_stock ON public.medicines(min_stock_alert) WHERE is_active = true;
+
+-- Batches, Expiry & FEFO (First Expiry, First Out) Indexes
+CREATE INDEX IF NOT EXISTS idx_batches_fefo ON public.batches(medicine_id, expiry_date ASC, current_quantity)
+  WHERE current_quantity > 0;
+CREATE INDEX IF NOT EXISTS idx_batches_expiry ON public.batches(expiry_date);
+CREATE INDEX IF NOT EXISTS idx_batches_supplier ON public.batches(supplier_id);
+
+-- Purchases & Items
+CREATE INDEX IF NOT EXISTS idx_purchases_supplier ON public.purchases(supplier_id);
+CREATE INDEX IF NOT EXISTS idx_purchases_date ON public.purchases(purchase_date DESC);
+CREATE INDEX IF NOT EXISTS idx_purchase_items_purchase ON public.purchase_items(purchase_id);
+CREATE INDEX IF NOT EXISTS idx_purchase_items_medicine ON public.purchase_items(medicine_id);
+CREATE INDEX IF NOT EXISTS idx_purchase_items_batch ON public.purchase_items(batch_id);
+
+-- Invoices & Sales Reporting
+CREATE INDEX IF NOT EXISTS idx_invoices_customer ON public.invoices(customer_id);
+CREATE INDEX IF NOT EXISTS idx_invoices_created_at ON public.invoices(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_invoices_no ON public.invoices(invoice_no);
+CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON public.invoice_items(invoice_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_items_medicine ON public.invoice_items(medicine_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_items_batch ON public.invoice_items(batch_id);
+
+-- Stock Movements & Audits
+CREATE INDEX IF NOT EXISTS idx_stock_movements_medicine ON public.stock_movements(medicine_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_stock_movements_batch ON public.stock_movements(batch_id);
+CREATE INDEX IF NOT EXISTS idx_stock_movements_ref ON public.stock_movements(reference_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON public.audit_logs(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_table ON public.audit_logs(table_name, record_id);
+CREATE INDEX IF NOT EXISTS idx_expenses_date ON public.expenses(expense_date DESC);
+
+-- ==============================================================================
+-- 6. LEAST-PRIVILEGE ROW LEVEL SECURITY (RLS) POLICIES (Idempotent)
+-- ==============================================================================
+
+-- Enable RLS on all 14 tables
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.categories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.brands ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.medicines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.suppliers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.purchases ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.purchase_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.batches ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.customers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.invoices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.invoice_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.expenses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.stock_movements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
+
+-- ------------------------------------------------------------------------------
+-- RLS: PROFILES
+-- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "profiles_select_own_or_staff" ON public.profiles;
+CREATE POLICY "profiles_select_own_or_staff"
+  ON public.profiles FOR SELECT
+  TO authenticated
+  USING (id = auth.uid() OR public.is_staff());
+
+DROP POLICY IF EXISTS "profiles_update_self" ON public.profiles;
+CREATE POLICY "profiles_update_self"
+  ON public.profiles FOR UPDATE
+  TO authenticated
+  USING (id = auth.uid())
+  WITH CHECK (id = auth.uid());
+
+DROP POLICY IF EXISTS "profiles_admin_all" ON public.profiles;
+CREATE POLICY "profiles_admin_all"
+  ON public.profiles FOR ALL
+  TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
+
+-- ------------------------------------------------------------------------------
+-- RLS: CATEGORIES & BRANDS (Master Catalog Taxonomy)
+-- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "categories_select_staff" ON public.categories;
+CREATE POLICY "categories_select_staff"
+  ON public.categories FOR SELECT
+  TO authenticated
+  USING (public.is_staff());
+
+DROP POLICY IF EXISTS "categories_admin_modify" ON public.categories;
+CREATE POLICY "categories_admin_modify"
+  ON public.categories FOR ALL
+  TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
+
+DROP POLICY IF EXISTS "brands_select_staff" ON public.brands;
+CREATE POLICY "brands_select_staff"
+  ON public.brands FOR SELECT
+  TO authenticated
+  USING (public.is_staff());
+
+DROP POLICY IF EXISTS "brands_admin_modify" ON public.brands;
+CREATE POLICY "brands_admin_modify"
+  ON public.brands FOR ALL
+  TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
+
+-- ------------------------------------------------------------------------------
+-- RLS: MEDICINES (Master Drug Directory)
+-- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "medicines_select_staff" ON public.medicines;
+CREATE POLICY "medicines_select_staff"
+  ON public.medicines FOR SELECT
+  TO authenticated
+  USING (public.is_staff());
+
+DROP POLICY IF EXISTS "medicines_admin_all" ON public.medicines;
+CREATE POLICY "medicines_admin_all"
+  ON public.medicines FOR ALL
+  TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
+
+-- ------------------------------------------------------------------------------
+-- RLS: SUPPLIERS (Wholesale Vendors)
+-- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "suppliers_select_staff" ON public.suppliers;
+CREATE POLICY "suppliers_select_staff"
+  ON public.suppliers FOR SELECT
+  TO authenticated
+  USING (public.is_staff());
+
+DROP POLICY IF EXISTS "suppliers_admin_modify" ON public.suppliers;
+CREATE POLICY "suppliers_admin_modify"
+  ON public.suppliers FOR ALL
+  TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
+
+-- ------------------------------------------------------------------------------
+-- RLS: BATCHES (Inventory Stock & Expiry)
+-- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "batches_select_staff" ON public.batches;
+CREATE POLICY "batches_select_staff"
+  ON public.batches FOR SELECT
+  TO authenticated
+  USING (public.is_staff());
+
+DROP POLICY IF EXISTS "batches_admin_all" ON public.batches;
+CREATE POLICY "batches_admin_all"
+  ON public.batches FOR ALL
+  TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
+
+-- ------------------------------------------------------------------------------
+-- RLS: PURCHASES & PURCHASE_ITEMS (Inward Procurement Bills)
+-- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "purchases_select_staff" ON public.purchases;
+CREATE POLICY "purchases_select_staff"
+  ON public.purchases FOR SELECT
+  TO authenticated
+  USING (public.is_staff());
+
+DROP POLICY IF EXISTS "purchases_admin_all" ON public.purchases;
+CREATE POLICY "purchases_admin_all"
+  ON public.purchases FOR ALL
+  TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
+
+DROP POLICY IF EXISTS "purchase_items_select_staff" ON public.purchase_items;
+CREATE POLICY "purchase_items_select_staff"
+  ON public.purchase_items FOR SELECT
+  TO authenticated
+  USING (public.is_staff());
+
+DROP POLICY IF EXISTS "purchase_items_admin_all" ON public.purchase_items;
+CREATE POLICY "purchase_items_admin_all"
+  ON public.purchase_items FOR ALL
+  TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
+
+-- ------------------------------------------------------------------------------
+-- RLS: CUSTOMERS (Patient Profiles)
+-- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "customers_select_staff" ON public.customers;
+CREATE POLICY "customers_select_staff"
+  ON public.customers FOR SELECT
+  TO authenticated
+  USING (public.is_staff());
+
+DROP POLICY IF EXISTS "customers_insert_staff" ON public.customers;
+CREATE POLICY "customers_insert_staff"
+  ON public.customers FOR INSERT
+  TO authenticated
+  WITH CHECK (public.is_staff());
+
+DROP POLICY IF EXISTS "customers_update_staff" ON public.customers;
+CREATE POLICY "customers_update_staff"
+  ON public.customers FOR UPDATE
+  TO authenticated
+  USING (public.is_staff())
+  WITH CHECK (public.is_staff());
+
+DROP POLICY IF EXISTS "customers_admin_delete" ON public.customers;
+CREATE POLICY "customers_admin_delete"
+  ON public.customers FOR DELETE
+  TO authenticated
+  USING (public.is_admin());
+
+-- ------------------------------------------------------------------------------
+-- RLS: INVOICES & INVOICE_ITEMS (Counter Sales Receipts)
+-- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "invoices_select_staff" ON public.invoices;
+CREATE POLICY "invoices_select_staff"
+  ON public.invoices FOR SELECT
+  TO authenticated
+  USING (public.is_staff());
+
+DROP POLICY IF EXISTS "invoices_admin_all" ON public.invoices;
+CREATE POLICY "invoices_admin_all"
+  ON public.invoices FOR ALL
+  TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
+
+DROP POLICY IF EXISTS "invoice_items_select_staff" ON public.invoice_items;
+CREATE POLICY "invoice_items_select_staff"
+  ON public.invoice_items FOR SELECT
+  TO authenticated
+  USING (public.is_staff());
+
+DROP POLICY IF EXISTS "invoice_items_admin_all" ON public.invoice_items;
+CREATE POLICY "invoice_items_admin_all"
+  ON public.invoice_items FOR ALL
+  TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
+
+-- ------------------------------------------------------------------------------
+-- RLS: EXPENSES (Petty Cash & Store Overheads)
+-- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "expenses_select_staff" ON public.expenses;
+CREATE POLICY "expenses_select_staff"
+  ON public.expenses FOR SELECT
+  TO authenticated
+  USING (public.is_staff());
+
+DROP POLICY IF EXISTS "expenses_insert_staff" ON public.expenses;
+CREATE POLICY "expenses_insert_staff"
+  ON public.expenses FOR INSERT
+  TO authenticated
+  WITH CHECK (public.is_staff() AND (created_by IS NULL OR created_by = auth.uid()));
+
+DROP POLICY IF EXISTS "expenses_admin_modify" ON public.expenses;
+CREATE POLICY "expenses_admin_modify"
+  ON public.expenses FOR ALL
+  TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
+
+-- ------------------------------------------------------------------------------
+-- RLS: STOCK_MOVEMENTS (Immutable Inventory Ledger)
+-- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "stock_movements_select_staff" ON public.stock_movements;
+CREATE POLICY "stock_movements_select_staff"
+  ON public.stock_movements FOR SELECT
+  TO authenticated
+  USING (public.is_staff());
+
+DROP POLICY IF EXISTS "stock_movements_admin_insert" ON public.stock_movements;
+CREATE POLICY "stock_movements_admin_insert"
+  ON public.stock_movements FOR INSERT
+  TO authenticated
+  WITH CHECK (public.is_admin());
+
+-- Note: No UPDATE or DELETE policies defined for stock_movements (Immutable by design)
+
+-- ------------------------------------------------------------------------------
+-- RLS: AUDIT_LOGS (Administrative Action Ledger)
+-- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "audit_logs_select_admin" ON public.audit_logs;
+CREATE POLICY "audit_logs_select_admin"
+  ON public.audit_logs FOR SELECT
+  TO authenticated
+  USING (public.is_admin());
+
+-- Note: Direct client INSERT, UPDATE, or DELETE on audit_logs is completely disabled.
+-- Logs can only be written by database triggers or trusted internal functions.
+-- ==============================================================================
