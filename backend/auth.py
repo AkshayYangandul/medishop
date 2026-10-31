@@ -284,7 +284,10 @@ def _load_profile_from_db(user_id: str, engine: Engine) -> Dict[str, Any]:
     try:
         with engine.connect() as conn:
             profile = conn.execute(
-                text("SELECT id, email, role, is_active FROM profiles WHERE id = :id"),
+                text(
+                    "SELECT id, email, full_name, role, is_active "
+                    "FROM profiles WHERE id = :id"
+                ),
                 {"id": user_id},
             ).mappings().first()
     except Exception as exc:

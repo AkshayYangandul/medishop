@@ -19,7 +19,7 @@ export function DashboardPage() {
         subtitle="Real-time overview of pharmacy inventory, counter sales, and batch expiry tracking."
         badge={
           <Badge variant="brand" size="md" dot>
-            Phase 1 • Mock Data Active
+            Phase 2 • Live Data
           </Badge>
         }
         actions={

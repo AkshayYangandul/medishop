@@ -1,12 +1,16 @@
-import { useNavigate, NavLink } from 'react-router-dom';
+import { useNavigate, Navigate } from 'react-router-dom';
+import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { loginSchema } from '../schemas/authSchema';
-import { Cross, Lock, Mail, ArrowRight, ShieldCheck, AlertCircle } from 'lucide-react';
+import { Cross, Lock, Mail, ArrowRight, AlertCircle } from 'lucide-react';
 import { Button } from '../components/common/Button';
+import { useAuth } from '../context/AuthContext';
 
 export function LoginPage() {
   const navigate = useNavigate();
+  const { isAuthenticated, login } = useAuth();
+  const [serverError, setServerError] = useState(null);
 
   const {
     register,
@@ -15,17 +19,31 @@ export function LoginPage() {
   } = useForm({
     resolver: zodResolver(loginSchema),
     defaultValues: {
-      email: 'pharmacist@medishop.local',
-      password: 'password123',
-      rememberMe: true,
+      email: '',
+      password: '',
+      rememberMe: false,
     },
   });
 
-  const onSubmit = () => {
-    // Phase 1: Authentication is simulated (No Supabase yet)
-    setTimeout(() => {
-      navigate('/dashboard');
-    }, 400);
+  // Authenticated users should not see the login screen.
+  if (isAuthenticated) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  const onSubmit = async (values) => {
+    setServerError(null);
+    try {
+      await login({
+        email: values.email,
+        password: values.password,
+        rememberMe: values.rememberMe,
+      });
+      navigate('/dashboard', { replace: true });
+    } catch (err) {
+      const message =
+        err?.message || 'Unable to sign in right now. Please check your connection and try again.';
+      setServerError(message);
+    }
   };
 
   return (
@@ -45,16 +63,16 @@ export function LoginPage() {
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
         <div className="bg-white py-8 px-6 shadow-soft-xl rounded-2xl sm:px-10 border border-slate-100">
-          {/* Phase 1 Advisory Alert */}
-          <div className="mb-6 p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 flex items-start gap-2.5">
-            <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-            <div>
-              <strong className="block font-semibold">Phase 1 Setup Demo</strong>
-              <span>
-                Backend authentication (Supabase) will be hooked up in Phase 2. Demo credentials are prefilled for testing.
-              </span>
+          {/* API / network error banner */}
+          {serverError && (
+            <div className="mb-6 p-3 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-800 flex items-start gap-2.5">
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+              <div>
+                <strong className="block font-semibold">Sign in failed</strong>
+                <span>{serverError}</span>
+              </div>
             </div>
-          </div>
+          )}
 
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
             {/* Email Field */}
@@ -128,19 +146,9 @@ export function LoginPage() {
               icon={ArrowRight}
               iconPosition="right"
             >
-              {isSubmitting ? 'Verifying...' : 'Sign In to MediShop'}
+              {isSubmitting ? 'Signing in...' : 'Sign In to MediShop'}
             </Button>
           </form>
-
-          {/* Direct jump to dashboard link */}
-          <div className="mt-6 pt-5 border-t border-slate-100 text-center">
-            <NavLink
-              to="/dashboard"
-              className="text-xs text-slate-500 hover:text-brand-600 font-medium inline-flex items-center gap-1"
-            >
-              Skip login & browse dashboard directly &rarr;
-            </NavLink>
-          </div>
         </div>
       </div>
     </div>
