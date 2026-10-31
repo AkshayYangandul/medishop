@@ -15,38 +15,44 @@ import { ExpensesPage } from './pages/ExpensesPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { NotFoundPage } from './pages/NotFoundPage';
+import { ProtectedRoute } from './components/ProtectedRoute';
+import { AuthProvider } from './context/AuthContext';
 
 export function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        {/* Authentication Route */}
-        <Route path="/login" element={<LoginPage />} />
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          {/* Public authentication route */}
+          <Route path="/login" element={<LoginPage />} />
 
-        {/* Application Layout Protected Shell */}
-        <Route path="/" element={<MainLayout />}>
-          {/* Default redirect to Dashboard */}
-          <Route index element={<Navigate to="/dashboard" replace />} />
+          {/* Application Layout Protected Shell */}
+          <Route element={<ProtectedRoute />}>
+            <Route element={<MainLayout />}>
+              {/* Default redirect to Dashboard */}
+              <Route index element={<Navigate to="/dashboard" replace />} />
 
-          {/* Core Routes */}
-          <Route path="dashboard" element={<DashboardPage />} />
-          <Route path="medicines" element={<MedicinesPage />} />
-          <Route path="categories" element={<CategoriesPage />} />
-          <Route path="brands" element={<BrandsPage />} />
-          <Route path="batches" element={<BatchesPage />} />
-          <Route path="suppliers" element={<SuppliersPage />} />
-          <Route path="purchases" element={<PurchasesPage />} />
-          <Route path="customers" element={<CustomersPage />} />
-          <Route path="sales" element={<SalesPage />} />
-          <Route path="expenses" element={<ExpensesPage />} />
-          <Route path="reports" element={<ReportsPage />} />
-          <Route path="settings" element={<SettingsPage />} />
+              {/* Core Routes */}
+              <Route path="dashboard" element={<DashboardPage />} />
+              <Route path="medicines" element={<MedicinesPage />} />
+              <Route path="categories" element={<CategoriesPage />} />
+              <Route path="brands" element={<BrandsPage />} />
+              <Route path="batches" element={<BatchesPage />} />
+              <Route path="suppliers" element={<SuppliersPage />} />
+              <Route path="purchases" element={<PurchasesPage />} />
+              <Route path="customers" element={<CustomersPage />} />
+              <Route path="sales" element={<SalesPage />} />
+              <Route path="expenses" element={<ExpensesPage />} />
+              <Route path="reports" element={<ReportsPage />} />
+              <Route path="settings" element={<SettingsPage />} />
 
-          {/* 404 Fallback */}
-          <Route path="*" element={<NotFoundPage />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
+              {/* 404 Fallback */}
+              <Route path="*" element={<NotFoundPage />} />
+            </Route>
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
   );
 }
 

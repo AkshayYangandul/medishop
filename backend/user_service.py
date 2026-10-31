@@ -40,6 +40,11 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from fastapi import HTTPException, status
 
+try:
+    from auth import hash_password
+except ImportError:
+    from backend.auth import hash_password
+
 logger = logging.getLogger("medishop.user_service")
 
 ADMIN_ROLE_MUTEX_NAME = "medishop_admin_role_mutex"
@@ -435,3 +440,101 @@ def provision_initial_admin(
             }
         finally:
             _release_lock(conn, ADMIN_ROLE_MUTEX_NAME)
+
+
+def user_list(engine: Engine) -> list:
+    """Returns all profiles (user accounts) for administration."""
+    try:
+        with engine.begin() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT id, email, full_name, role, phone, is_active, created_at, updated_at "
+                    "FROM profiles ORDER BY created_at ASC"
+                )
+            ).mappings().all()
+            return [dict(row) for row in rows]
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An internal error occurred while listing users.",
+        ) from exc
+
+
+def user_create(engine: Engine, payload: Dict[str, Any], created_by: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Creates a new user profile with hashed password.
+    Validates email uniqueness and valid role ('admin', 'pharmacist', 'cashier').
+    """
+    email = str(payload.get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A valid email address is required.",
+        )
+    password = str(payload.get("password") or "")
+    if len(password) < 6:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Password must be at least 6 characters.",
+        )
+    full_name = str(payload.get("full_name") or "").strip()
+    if not full_name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Full name is required.",
+        )
+    role = str(payload.get("role") or "cashier").strip().lower()
+    if role not in ("admin", "pharmacist", "cashier"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid role. Must be one of: admin, pharmacist, cashier.",
+        )
+    phone = payload.get("phone")
+    is_active = bool(payload.get("is_active") if "is_active" in payload else True)
+
+    hashed = hash_password(password)
+    user_id = str(uuid.uuid4())
+
+    try:
+        with engine.begin() as conn:
+            existing = conn.execute(
+                text("SELECT id FROM profiles WHERE LOWER(email) = LOWER(:email)"),
+                {"email": email},
+            ).first()
+            if existing:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="A user with this email address already exists.",
+                )
+
+            conn.execute(
+                text(
+                    "INSERT INTO profiles (id, email, password_hash, full_name, role, phone, is_active) "
+                    "VALUES (:id, :email, :password_hash, :full_name, :role, :phone, :is_active)"
+                ),
+                {
+                    "id": user_id,
+                    "email": email,
+                    "password_hash": hashed,
+                    "full_name": full_name,
+                    "role": role,
+                    "phone": phone,
+                    "is_active": is_active,
+                },
+            )
+
+            row = conn.execute(
+                text(
+                    "SELECT id, email, full_name, role, phone, is_active, created_at, updated_at "
+                    "FROM profiles WHERE id = :user_id"
+                ),
+                {"user_id": user_id},
+            ).mappings().first()
+            return dict(row)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An internal error occurred while creating the user.",
+        ) from exc
