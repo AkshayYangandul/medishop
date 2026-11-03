@@ -371,3 +371,19 @@ def require_active_admin(
             detail="Forbidden: Active administrator privileges required.",
         )
     return current_user
+
+
+def require_admin_or_pharmacist(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    FastAPI dependency: ensures the authenticated user holds either the
+    ``admin`` or ``pharmacist`` role.
+    Rejects any caller lacking these roles with HTTP 403.
+    """
+    if current_user.get("role") not in ("admin", "pharmacist"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: Staff privileges required.",
+        )
+    return current_user

@@ -18,54 +18,65 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { cn } from '../utilities/cn';
+import { useAuth } from '../context/AuthContext';
 
 const navigationGroups = [
   {
     title: 'Overview',
     items: [
-      { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
+      { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard, roles: ['admin', 'pharmacist'] },
     ],
   },
   {
     title: 'Inventory Management',
     items: [
-      { name: 'Medicines', path: '/medicines', icon: Pill },
-      { name: 'Categories', path: '/categories', icon: Tags },
-      { name: 'Brands', path: '/brands', icon: Bookmark },
-      { name: 'Batches & Expiry', path: '/batches', icon: Layers },
+      { name: 'Medicines', path: '/medicines', icon: Pill, roles: ['admin', 'pharmacist'] },
+      { name: 'Categories', path: '/categories', icon: Tags, roles: ['admin'] },
+      { name: 'Brands', path: '/brands', icon: Bookmark, roles: ['admin'] },
+      { name: 'Batches & Expiry', path: '/batches', icon: Layers, roles: ['admin'] },
     ],
   },
   {
     title: 'Procurement',
     items: [
-      { name: 'Suppliers', path: '/suppliers', icon: Truck },
-      { name: 'Purchases', path: '/purchases', icon: PackagePlus },
+      { name: 'Suppliers', path: '/suppliers', icon: Truck, roles: ['admin'] },
+      { name: 'Purchases', path: '/purchases', icon: PackagePlus, roles: ['admin'] },
     ],
   },
   {
     title: 'Sales & Patients',
     items: [
-      { name: 'Sales & POS', path: '/sales', icon: ShoppingCart },
-      { name: 'Customers', path: '/customers', icon: Users },
+      { name: 'Sales & POS', path: '/sales', icon: ShoppingCart, roles: ['admin', 'pharmacist'] },
+      { name: 'Customers', path: '/customers', icon: Users, roles: ['admin', 'pharmacist'] },
     ],
   },
   {
     title: 'Finance & Insights',
     items: [
-      { name: 'Expenses', path: '/expenses', icon: Receipt },
-      { name: 'Reports', path: '/reports', icon: FileBarChart },
+      { name: 'Expenses', path: '/expenses', icon: Receipt, roles: ['admin'] },
+      { name: 'Reports', path: '/reports', icon: FileBarChart, roles: ['admin'] },
     ],
   },
   {
     title: 'System',
     items: [
-      { name: 'Settings', path: '/settings', icon: Settings },
+      { name: 'Settings', path: '/settings', icon: Settings, roles: ['admin'] },
     ],
   },
 ];
 
 export function Sidebar({ isOpen, onClose }) {
   const location = useLocation();
+  const { user } = useAuth();
+  const userRole = user?.role || 'pharmacist';
+
+  // Filter groups and items to display only permitted modules for the current user's role
+  const filteredGroups = navigationGroups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => !item.roles || item.roles.includes(userRole)),
+    }))
+    .filter((group) => group.items.length > 0);
 
   return (
     <>
@@ -112,7 +123,7 @@ export function Sidebar({ isOpen, onClose }) {
 
         {/* Navigation list */}
         <div className="flex-1 overflow-y-auto px-3 py-4 space-y-6">
-          {navigationGroups.map((group) => (
+          {filteredGroups.map((group) => (
             <div key={group.title} className="space-y-1">
               <p className="px-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
                 {group.title}
@@ -150,15 +161,15 @@ export function Sidebar({ isOpen, onClose }) {
           ))}
         </div>
 
-        {/* Phase 1 Status Banner at bottom */}
+        {/* Status Banner at bottom */}
         <div className="p-3 border-t border-slate-800/80 bg-slate-950/30">
           <div className="p-3 rounded-lg bg-slate-800/60 border border-slate-700/60 text-xs">
             <div className="flex items-center gap-2 text-brand-400 font-semibold mb-1">
               <Sparkles className="w-3.5 h-3.5" />
-              <span>Phase 1: Project Setup</span>
+              <span>Role: <span className="capitalize">{userRole}</span></span>
             </div>
             <p className="text-[11px] text-slate-400 leading-relaxed">
-              Clean architecture & navigation ready. Database integration in Phase 2.
+              {userRole === 'admin' ? 'Full Administrator Access' : 'Pharmacist: POS, Medicines & Patients'}
             </p>
           </div>
         </div>

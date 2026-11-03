@@ -300,7 +300,7 @@ class UserCreateRequest(BaseModel):
     email: str = Field(..., min_length=3, max_length=255)
     password: str = Field(..., min_length=6, max_length=100)
     full_name: str = Field(..., min_length=1, max_length=255)
-    role: str = Field("cashier", min_length=1, max_length=50)
+    role: str = Field("pharmacist", min_length=1, max_length=50, description="Target role: 'admin' or 'pharmacist'")
     phone: Optional[str] = Field(None, max_length=50)
     is_active: Optional[bool] = True
 
@@ -480,7 +480,15 @@ def get_medicine(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Returns a single medicine by ID. Raises HTTP 404 when not found."""
-    return medicine_get(engine, medicine_id)
+    try:
+        return medicine_get(engine, medicine_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An internal error occurred while fetching the medicine.",
+        ) from exc
 
 
 @app.post("/api/medicines")
@@ -503,6 +511,30 @@ def update_medicine(
     Requires an active administrator. Raises HTTP 404 when not found.
     """
     return medicine_update(engine, medicine_id, payload.model_dump())
+
+
+@app.put("/api/medicines/{medicine_id}")
+def update_medicine_put(
+    medicine_id: str,
+    payload: MedicineUpdateRequest,
+    current_user: Dict[str, Any] = Depends(require_active_admin),
+):
+    """
+    Updates a medicine. Requires an active administrator.
+    """
+    return medicine_update(engine, medicine_id, payload.model_dump())
+
+
+@app.delete("/api/medicines/{medicine_id}")
+def delete_medicine(
+    medicine_id: str,
+    current_user: Dict[str, Any] = Depends(require_active_admin),
+):
+    """
+    Deactivates a medicine. Requires an active administrator.
+    Rejects pharmacists and unauthorized callers with HTTP 403.
+    """
+    return medicine_update(engine, medicine_id, {"is_active": False})
 
 
 @app.get("/api/inventory/medicines/{medicine_id}")
@@ -653,7 +685,7 @@ def get_batches(
     status_filter: str = "",
     page: int = 1,
     limit: int = 50,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: Dict[str, Any] = Depends(require_active_admin),
 ):
     """Lists batches with optional filtering by search, medicine_id, and expiry/stock status."""
     return medicine_batch_list(
@@ -776,18 +808,18 @@ def update_role_or_status_combined(
 @app.get("/api/suppliers")
 def get_suppliers(
     search: str = "",
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: Dict[str, Any] = Depends(require_active_admin),
 ):
-    """Returns suppliers, optionally filtered by search."""
+    """Returns suppliers, optionally filtered by search. Requires active admin."""
     return supplier_list(engine, search=search)
 
 
 @app.get("/api/suppliers/{supplier_id}")
 def get_supplier(
     supplier_id: str,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: Dict[str, Any] = Depends(require_active_admin),
 ):
-    """Retrieves a single supplier by ID."""
+    """Retrieves a single supplier by ID. Requires active admin."""
     return supplier_get(engine, supplier_id)
 
 
@@ -900,8 +932,16 @@ def get_invoice(
     invoice_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    """Retrieves an invoice and its line items."""
-    return invoice_get(engine, invoice_id)
+    """
+    Retrieves an invoice and its line items.
+    Protects wholesale purchase costs: purchase_cost_at_sale is stripped for non-admin callers.
+    """
+    invoice_data = invoice_get(engine, invoice_id)
+    if current_user.get("role") != "admin" and "items" in invoice_data:
+        # Non-admin users (such as pharmacists) should not see internal purchase costs
+        for item in invoice_data["items"]:
+            item.pop("purchase_cost_at_sale", None)
+    return invoice_data
 
 
 @app.post("/api/invoices")
@@ -924,18 +964,18 @@ def get_purchases(
     search: str = "",
     page: int = 1,
     limit: int = 50,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: Dict[str, Any] = Depends(require_active_admin),
 ):
-    """Returns a paginated list of purchases."""
+    """Returns a paginated list of purchases. Requires active admin."""
     return purchase_list(engine, search=search, page=page, limit=limit)
 
 
 @app.get("/api/purchases/{purchase_id}")
 def get_purchase(
     purchase_id: str,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: Dict[str, Any] = Depends(require_active_admin),
 ):
-    """Retrieves a purchase record with items."""
+    """Retrieves a purchase record with items. Requires active admin."""
     return purchase_get(engine, purchase_id)
 
 
@@ -962,9 +1002,9 @@ def get_expenses(
     end_date: Optional[str] = None,
     page: int = 1,
     limit: int = 50,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: Dict[str, Any] = Depends(require_active_admin),
 ):
-    """Returns a paginated list of operating expenses."""
+    """Returns a paginated list of operating expenses. Requires active admin."""
     return expense_list(
         engine,
         search=search,
@@ -979,9 +1019,9 @@ def get_expenses(
 @app.post("/api/expenses")
 def create_expense(
     payload: ExpenseCreateRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: Dict[str, Any] = Depends(require_active_admin),
 ):
-    """Creates a new expense entry."""
+    """Creates a new expense entry. Requires active admin."""
     return expense_create(engine, payload.model_dump(), created_by=current_user["id"])
 
 
@@ -1031,7 +1071,7 @@ def get_dashboard_stats(
 def get_reports_summary(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: Dict[str, Any] = Depends(require_active_admin),
 ):
-    """Returns financial and operational reports summary."""
+    """Returns financial and operational reports summary. Requires active administrator."""
     return reports_summary(engine, start_date=start_date, end_date=end_date)

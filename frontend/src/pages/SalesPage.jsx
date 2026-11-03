@@ -10,7 +10,13 @@ import {
   Loader2,
   RefreshCw,
   Eye,
+  Printer,
+  Download,
 } from 'lucide-react';
+import {
+  downloadInvoiceAsHtml,
+  printInvoiceDirectly,
+} from '../utilities/invoiceTemplate';
 import { PageHeader } from '../components/common/PageHeader';
 import { Badge } from '../components/common/Badge';
 import { Card, CardContent } from '../components/common/Card';
@@ -49,6 +55,36 @@ export function SalesPage() {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [selectedInvoice, setSelectedInvoice] = useState(null);
+  const [printModalInvoice, setPrintModalInvoice] = useState(null);
+  const [isFetchingInvoice, setIsFetchingInvoice] = useState(false);
+
+  const handlePrintOrDownload = async (invOrId, action = 'preview') => {
+    if (!invOrId) return;
+    let inv = typeof invOrId === 'object' ? invOrId : null;
+    const invId = typeof invOrId === 'string' ? invOrId : inv?.id;
+
+    if (!inv || !inv.items || inv.items.length === 0) {
+      if (!invId) return;
+      setIsFetchingInvoice(true);
+      try {
+        inv = await getInvoiceById(invId);
+      } catch (err) {
+        alert(err?.message || 'Failed to fetch complete invoice details.');
+        setIsFetchingInvoice(false);
+        return;
+      } finally {
+        setIsFetchingInvoice(false);
+      }
+    }
+
+    if (action === 'print') {
+      printInvoiceDirectly(inv);
+    } else if (action === 'download') {
+      downloadInvoiceAsHtml(inv);
+    } else {
+      setPrintModalInvoice(inv);
+    }
+  };
 
   // Load inventory for POS
   const loadInventory = useCallback(async () => {
@@ -161,7 +197,7 @@ export function SalesPage() {
   const grandTotal = Math.max(0, subtotal - discount);
 
   const handleCheckout = async () => {
-    if (cart.length === 0) return;
+    if (cart.length === 0 || checkoutLoading) return;
     setCheckoutLoading(true);
     setCheckoutError(null);
     try {
@@ -324,19 +360,33 @@ export function SalesPage() {
 
             {/* Completed Invoice Success Banner */}
             {lastInvoice && (
-              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex items-start gap-3">
-                <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
-                <div className="flex-1 text-sm">
-                  <div className="font-semibold text-emerald-900">
-                    Invoice Billed Successfully: {lastInvoice.invoice_no}
-                  </div>
-                  <div className="text-emerald-700 text-xs mt-0.5">
-                    Total: {formatCurrency(lastInvoice.net_amount)} • Method: {lastInvoice.payment_method.toUpperCase()} • Customer: {lastInvoice.customer_name || 'Walk-in'}
+              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-in fade-in">
+                <div className="flex items-start gap-3">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                  <div className="text-sm">
+                    <div className="font-semibold text-emerald-900">
+                      Invoice Billed Successfully: {lastInvoice.invoice_no}
+                    </div>
+                    <div className="text-emerald-700 text-xs mt-0.5">
+                      Total: {formatCurrency(lastInvoice.net_amount)} • Method: {(lastInvoice.payment_method || 'CASH').toUpperCase()} • Customer: {lastInvoice.customer_name || 'Walk-in'}
+                    </div>
                   </div>
                 </div>
-                <Button variant="outline" size="sm" onClick={() => setLastInvoice(null)}>
-                  Dismiss
-                </Button>
+                <div className="flex items-center gap-2 self-end sm:self-auto">
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    icon={Printer}
+                    disabled={isFetchingInvoice}
+                    onClick={() => handlePrintOrDownload(lastInvoice.id || lastInvoice, 'preview')}
+                  >
+                    {isFetchingInvoice ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : null}
+                    Download / Print Invoice
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setLastInvoice(null)}>
+                    Dismiss
+                  </Button>
+                </div>
               </div>
             )}
           </div>
@@ -599,13 +649,22 @@ export function SalesPage() {
                           </Badge>
                         </td>
                         <td className="py-3.5 px-5 text-right">
-                          <button
-                            onClick={() => viewInvoiceDetail(inv)}
-                            className="p-1.5 text-slate-500 hover:text-brand-600 hover:bg-brand-50 rounded-md transition-colors"
-                            title="View Items"
-                          >
-                            <Eye className="w-4 h-4" />
-                          </button>
+                          <div className="inline-flex items-center gap-1 justify-end">
+                            <button
+                              onClick={() => handlePrintOrDownload(inv.id, 'preview')}
+                              className="p-1.5 text-slate-500 hover:text-brand-600 hover:bg-brand-50 rounded-md transition-colors"
+                              title="Download / Print Invoice"
+                            >
+                              <Printer className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => viewInvoiceDetail(inv)}
+                              className="p-1.5 text-slate-500 hover:text-brand-600 hover:bg-brand-50 rounded-md transition-colors"
+                              title="View Items"
+                            >
+                              <Eye className="w-4 h-4" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))
@@ -640,6 +699,160 @@ export function SalesPage() {
             )}
           </CardContent>
         </Card>
+      )}
+
+      {/* Printable Invoice Modal Preview */}
+      {printModalInvoice && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-3xl w-full max-h-[92vh] flex flex-col overflow-hidden animate-scale-in">
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+              <div>
+                <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
+                  <Printer className="w-4 h-4 text-brand-600" />
+                  Printable Tax Invoice — {printModalInvoice.invoice_no}
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Ready to print or save as PDF
+                </p>
+              </div>
+              <button
+                onClick={() => setPrintModalInvoice(null)}
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-200 transition-colors"
+              >
+                &times;
+              </button>
+            </div>
+
+            {/* Invoice Document Body */}
+            <div className="p-6 overflow-y-auto space-y-6 flex-1 text-xs">
+              {/* Pharmacy Header */}
+              <div className="flex justify-between items-start border-b border-slate-200 pb-4">
+                <div>
+                  <h2 className="text-lg font-black text-brand-700">MediShop Healthcare & Retail Pharmacy</h2>
+                  <p className="text-slate-500 text-xs">Shop 4-5, City Medical Plaza, Main Market Road, Mumbai - 400001</p>
+                  <p className="text-slate-500 text-xs">Phone: +91 98765 43210 | GSTIN: 27AABCU9603R1ZM</p>
+                  <p className="text-slate-500 text-xs">DL No: MH-MZ2-48192 / MH-MZ2-48193</p>
+                </div>
+                <div className="text-right">
+                  <span className="px-2.5 py-1 rounded-md bg-emerald-100 text-emerald-800 font-bold uppercase tracking-wider text-[11px]">
+                    {printModalInvoice.payment_status || 'PAID'} • {printModalInvoice.payment_method || 'CASH'}
+                  </span>
+                  <p className="font-mono font-bold text-slate-900 text-sm mt-2">{printModalInvoice.invoice_no}</p>
+                  <p className="text-slate-500 text-[11px]">
+                    {printModalInvoice.created_at ? new Date(printModalInvoice.created_at).toLocaleString() : new Date().toLocaleString()}
+                  </p>
+                </div>
+              </div>
+
+              {/* Patient / Customer Metadata */}
+              <div className="grid grid-cols-2 gap-4 bg-slate-50 p-3.5 rounded-xl border border-slate-100">
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Billed To (Patient)</span>
+                  <p className="font-bold text-slate-900 text-sm">{printModalInvoice.customer_name || 'Walk-in Customer'}</p>
+                  <p className="text-slate-600">Phone: {printModalInvoice.customer_phone || 'N/A'}</p>
+                  <p className="text-slate-600">Address: {printModalInvoice.customer_address || 'Counter Client'}</p>
+                </div>
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Prescription & Dispensing</span>
+                  <p className="text-slate-700">Doctor / Rx Ref: <strong className="text-slate-900">{printModalInvoice.doctor_prescription_ref || 'Over-the-counter'}</strong></p>
+                  <p className="text-slate-700">Dispensed By: <strong className="text-slate-900">{printModalInvoice.cashier_name || 'Staff Pharmacist'}</strong></p>
+                </div>
+              </div>
+
+              {/* Items Table */}
+              <div className="border border-slate-200 rounded-xl overflow-hidden">
+                <table className="w-full text-left">
+                  <thead className="bg-slate-100/80 text-[11px] text-slate-600 uppercase border-b border-slate-200">
+                    <tr>
+                      <th className="py-2 px-3 text-center w-8">#</th>
+                      <th className="py-2 px-3">Item Description</th>
+                      <th className="py-2 px-3">Batch</th>
+                      <th className="py-2 px-3">Expiry</th>
+                      <th className="py-2 px-3 text-center">Qty</th>
+                      <th className="py-2 px-3 text-right">Price</th>
+                      <th className="py-2 px-3 text-right">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {(printModalInvoice.items || []).map((it, idx) => (
+                      <tr key={it.id || idx}>
+                        <td className="py-2 px-3 text-center text-slate-400">{idx + 1}</td>
+                        <td className="py-2 px-3 font-semibold text-slate-900">
+                          {it.medicine_name}
+                          {it.dosage_form ? <span className="text-slate-500 font-normal text-[11px] ml-1">({it.dosage_form})</span> : null}
+                        </td>
+                        <td className="py-2 px-3 font-mono text-slate-600">{it.batch_no || '—'}</td>
+                        <td className="py-2 px-3 text-slate-600">{it.expiry_date || '—'}</td>
+                        <td className="py-2 px-3 text-center font-bold text-slate-800">{it.quantity}</td>
+                        <td className="py-2 px-3 text-right text-slate-700">{formatCurrency(it.unit_price)}</td>
+                        <td className="py-2 px-3 text-right font-bold text-slate-900">{formatCurrency(it.subtotal)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Totals Breakdown */}
+              <div className="flex justify-end pt-2">
+                <div className="w-64 space-y-1.5 text-xs">
+                  <div className="flex justify-between text-slate-600">
+                    <span>Subtotal:</span>
+                    <span className="font-semibold">{formatCurrency(printModalInvoice.total_amount ?? printModalInvoice.net_amount)}</span>
+                  </div>
+                  {Number(printModalInvoice.discount_amount ?? 0) > 0 && (
+                    <div className="flex justify-between text-rose-600">
+                      <span>Discount:</span>
+                      <span className="font-semibold">-{formatCurrency(printModalInvoice.discount_amount)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-slate-600">
+                    <span>GST (Included):</span>
+                    <span>$0.00</span>
+                  </div>
+                  <div className="flex justify-between text-base font-extrabold text-brand-700 pt-2 border-t-2 border-brand-200">
+                    <span>Final Net Payable:</span>
+                    <span>{formatCurrency(printModalInvoice.net_amount)}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Disclaimer */}
+              <div className="text-[10px] text-slate-400 border-t border-slate-100 pt-3 text-center">
+                Computer Generated Tax Invoice • Prescriptions dispensed under certified pharmacist supervision • Thank you for choosing MediShop!
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="px-6 py-3.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
+              <Button
+                variant="outline"
+                size="sm"
+                icon={Download}
+                onClick={() => handlePrintOrDownload(printModalInvoice, 'download')}
+              >
+                Download HTML Invoice
+              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  icon={Printer}
+                  onClick={() => handlePrintOrDownload(printModalInvoice, 'print')}
+                >
+                  Print / Save as PDF
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPrintModalInvoice(null)}
+                >
+                  Close
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Invoice Detail Modal */}
@@ -725,7 +938,15 @@ export function SalesPage() {
               </div>
             </div>
 
-            <div className="px-6 py-3 border-t border-slate-100 flex justify-end">
+            <div className="px-6 py-3 border-t border-slate-100 flex items-center justify-between">
+              <Button
+                variant="primary"
+                size="sm"
+                icon={Printer}
+                onClick={() => handlePrintOrDownload(selectedInvoice, 'preview')}
+              >
+                Print / Download Invoice
+              </Button>
               <Button variant="outline" size="sm" onClick={() => setSelectedInvoice(null)}>
                 Close
               </Button>

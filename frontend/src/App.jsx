@@ -32,19 +32,23 @@ export function App() {
               {/* Default redirect to Dashboard */}
               <Route index element={<Navigate to="/dashboard" replace />} />
 
-              {/* Core Routes */}
+              {/* Modules Accessible to Both Admin & Pharmacist */}
               <Route path="dashboard" element={<DashboardPage />} />
               <Route path="medicines" element={<MedicinesPage />} />
-              <Route path="categories" element={<CategoriesPage />} />
-              <Route path="brands" element={<BrandsPage />} />
-              <Route path="batches" element={<BatchesPage />} />
-              <Route path="suppliers" element={<SuppliersPage />} />
-              <Route path="purchases" element={<PurchasesPage />} />
               <Route path="customers" element={<CustomersPage />} />
               <Route path="sales" element={<SalesPage />} />
-              <Route path="expenses" element={<ExpensesPage />} />
-              <Route path="reports" element={<ReportsPage />} />
-              <Route path="settings" element={<SettingsPage />} />
+
+              {/* Administrator-Only Modules */}
+              <Route element={<ProtectedRoute allowedRoles={['admin']} />}>
+                <Route path="categories" element={<CategoriesPage />} />
+                <Route path="brands" element={<BrandsPage />} />
+                <Route path="batches" element={<BatchesPage />} />
+                <Route path="suppliers" element={<SuppliersPage />} />
+                <Route path="purchases" element={<PurchasesPage />} />
+                <Route path="expenses" element={<ExpensesPage />} />
+                <Route path="reports" element={<ReportsPage />} />
+                <Route path="settings" element={<SettingsPage />} />
+              </Route>
 
               {/* 404 Fallback */}
               <Route path="*" element={<NotFoundPage />} />

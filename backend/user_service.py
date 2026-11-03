@@ -463,7 +463,7 @@ def user_list(engine: Engine) -> list:
 def user_create(engine: Engine, payload: Dict[str, Any], created_by: Optional[str] = None) -> Dict[str, Any]:
     """
     Creates a new user profile with hashed password.
-    Validates email uniqueness and valid role ('admin', 'pharmacist', 'cashier').
+    Validates email uniqueness and valid role ('admin', 'pharmacist').
     """
     email = str(payload.get("email") or "").strip().lower()
     if not email or "@" not in email:
@@ -483,11 +483,11 @@ def user_create(engine: Engine, payload: Dict[str, Any], created_by: Optional[st
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Full name is required.",
         )
-    role = str(payload.get("role") or "cashier").strip().lower()
-    if role not in ("admin", "pharmacist", "cashier"):
+    role = str(payload.get("role") or "pharmacist").strip().lower()
+    if role not in ("admin", "pharmacist"):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Invalid role. Must be one of: admin, pharmacist, cashier.",
+            detail="Invalid role. Must be 'admin' or 'pharmacist'.",
         )
     phone = payload.get("phone")
     is_active = bool(payload.get("is_active") if "is_active" in payload else True)

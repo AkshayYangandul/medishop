@@ -796,7 +796,7 @@ def invoice_create(engine: Engine, payload: Dict[str, Any], created_by: Optional
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An internal error occurred while processing the sale: {str(exc)}",
+            detail="An internal error occurred while processing the sale.",
         ) from exc
 
 
@@ -1174,7 +1174,7 @@ def purchase_create(engine: Engine, payload: Dict[str, Any], created_by: Optiona
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An internal error occurred while recording the purchase: {str(exc)}",
+            detail="An internal error occurred while recording the purchase.",
         ) from exc
 
 

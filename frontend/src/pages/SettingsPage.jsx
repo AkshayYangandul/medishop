@@ -26,7 +26,7 @@ const DEFAULT_USER_FORM = {
   full_name: '',
   email: '',
   password: '',
-  role: 'cashier',
+  role: 'pharmacist',
   phone: '',
   is_active: true,
 };
@@ -296,7 +296,6 @@ export function SettingsPage() {
                               >
                                 <option value="admin">Administrator</option>
                                 <option value="pharmacist">Pharmacist</option>
-                                <option value="cashier">Cashier</option>
                               </select>
                             </td>
                             <td className="py-3.5 px-4 text-center">
@@ -490,8 +489,7 @@ export function SettingsPage() {
                     onChange={(e) => setForm({ ...form, role: e.target.value })}
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white"
                   >
-                    <option value="cashier">Cashier (Counter POS)</option>
-                    <option value="pharmacist">Pharmacist (Inventory &amp; Dispensing)</option>
+                    <option value="pharmacist">Pharmacist (POS, Medicines &amp; Patients)</option>
                     <option value="admin">Administrator (Full Access)</option>
                   </select>
                 </div>

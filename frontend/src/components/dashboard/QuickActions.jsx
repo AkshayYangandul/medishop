@@ -8,48 +8,74 @@ import {
   Truck,
   Users,
   FileBarChart,
+  Pill,
 } from 'lucide-react';
-
-const actions = [
-  {
-    label: 'New Sale (POS)',
-    description: 'Instant checkout counter',
-    path: '/sales',
-    icon: ShoppingCart,
-    color: 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-200',
-  },
-  {
-    label: 'Add Medicine',
-    description: 'Register new drug/SKU',
-    path: '/medicines',
-    icon: PlusCircle,
-    color: 'bg-teal-50 text-teal-700 hover:bg-teal-100 border-teal-200',
-  },
-  {
-    label: 'Purchase Entry',
-    description: 'Inward batch from supplier',
-    path: '/purchases',
-    icon: Truck,
-    color: 'bg-sky-50 text-sky-700 hover:bg-sky-100 border-sky-200',
-  },
-  {
-    label: 'Add Customer',
-    description: 'Patient / regular client',
-    path: '/customers',
-    icon: Users,
-    color: 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border-indigo-200',
-  },
-  {
-    label: 'Sales Report',
-    description: 'Tax and profit summary',
-    path: '/reports',
-    icon: FileBarChart,
-    color: 'bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200',
-  },
-];
+import { useAuth } from '../../context/AuthContext';
 
 export function QuickActions() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
+
+  const actions = [
+    {
+      label: 'New Sale (POS)',
+      description: 'Instant checkout counter',
+      path: '/sales',
+      icon: ShoppingCart,
+      color: 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-200',
+      roles: ['admin', 'pharmacist'],
+    },
+    ...(isAdmin
+      ? [
+          {
+            label: 'Add Medicine',
+            description: 'Register new drug/SKU',
+            path: '/medicines',
+            icon: PlusCircle,
+            color: 'bg-teal-50 text-teal-700 hover:bg-teal-100 border-teal-200',
+            roles: ['admin'],
+          },
+          {
+            label: 'Purchase Entry',
+            description: 'Inward batch from supplier',
+            path: '/purchases',
+            icon: Truck,
+            color: 'bg-sky-50 text-sky-700 hover:bg-sky-100 border-sky-200',
+            roles: ['admin'],
+          },
+        ]
+      : [
+          {
+            label: 'Medicine Directory',
+            description: 'Browse medicine stock',
+            path: '/medicines',
+            icon: Pill,
+            color: 'bg-teal-50 text-teal-700 hover:bg-teal-100 border-teal-200',
+            roles: ['pharmacist'],
+          },
+        ]),
+    {
+      label: 'Add Customer',
+      description: 'Patient / regular client',
+      path: '/customers',
+      icon: Users,
+      color: 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border-indigo-200',
+      roles: ['admin', 'pharmacist'],
+    },
+    ...(isAdmin
+      ? [
+          {
+            label: 'Sales Report',
+            description: 'Tax and profit summary',
+            path: '/reports',
+            icon: FileBarChart,
+            color: 'bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200',
+            roles: ['admin'],
+          },
+        ]
+      : []),
+  ];
 
   return (
     <Card>
@@ -59,7 +85,7 @@ export function QuickActions() {
         icon={Zap}
       />
       <CardContent>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        <div className={`grid grid-cols-2 sm:grid-cols-3 ${isAdmin ? 'lg:grid-cols-5' : 'lg:grid-cols-3'} gap-3`}>
           {actions.map((act) => {
             const Icon = act.icon;
             return (
