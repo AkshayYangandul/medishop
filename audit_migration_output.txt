@@ -1,0 +1,9 @@
+INFO: Added column audit_logs.module.
+INFO: Added column audit_logs.description.
+INFO: Added column audit_logs.actor_name.
+INFO: Added column audit_logs.actor_role.
+INFO: Dropped foreign key fk_audit_logs_user. Historical user_id values are now immutable actor snapshots.
+INFO: Created index idx_audit_logs_created.
+INFO: Created index idx_audit_logs_module.
+INFO: Created index idx_audit_logs_action.
+INFO: Migration complete. Applied: column module, column description, column actor_name, column actor_role, foreign key fk_audit_logs_user, index idx_audit_logs_created, index idx_audit_logs_module, index idx_audit_logs_action

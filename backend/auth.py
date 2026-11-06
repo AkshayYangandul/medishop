@@ -286,7 +286,7 @@ def _load_profile_from_db(user_id: str, engine: Engine) -> Dict[str, Any]:
             profile = conn.execute(
                 text(
                     "SELECT id, email, full_name, role, is_active "
-                    "FROM profiles WHERE id = :id"
+                    "FROM profiles WHERE id = :id AND deleted_at IS NULL"
                 ),
                 {"id": user_id},
             ).mappings().first()

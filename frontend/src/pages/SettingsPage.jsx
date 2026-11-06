@@ -9,6 +9,8 @@ import {
   AlertCircle,
   Loader2,
   Lock,
+  Send,
+  Trash2,
 } from 'lucide-react';
 import { PageHeader } from '../components/common/PageHeader';
 import { Badge } from '../components/common/Badge';
@@ -18,8 +20,18 @@ import { useAuth } from '../context/AuthContext';
 import {
   getUsers,
   createUser,
+  restoreUserAccount,
   updateUserRole,
   updateUserStatus,
+  unlockUserAccount,
+  deleteUser,
+  sendTestEmail,
+  getEmailSettings,
+  addEmailSender,
+  updateEmailSender,
+  verifyEmailSender,
+  activateEmailSender,
+  disableEmailSender,
 } from '../services/api';
 
 const DEFAULT_USER_FORM = {
@@ -31,14 +43,14 @@ const DEFAULT_USER_FORM = {
   is_active: true,
 };
 
-export function SettingsPage() {
+export function SettingsPage({ initialUsers } = {}) {
   const { user: currentUser } = useAuth();
   const isAdmin = currentUser?.role === 'admin';
 
   const [activeTab, setActiveTab] = useState('staff'); // 'staff' | 'store'
 
   // Staff State
-  const [users, setUsers] = useState([]);
+  const [users, setUsers] = useState(Array.isArray(initialUsers) ? initialUsers : []);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
   const [actionSuccess, setActionSuccess] = useState(null);
@@ -51,6 +63,17 @@ export function SettingsPage() {
 
   // Role / Status Action Loading
   const [actionLoadingId, setActionLoadingId] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+
+  // Transactional email settings state
+  const [emailSettingsLoading, setEmailSettingsLoading] = useState(false);
+  const [mailSuccess, setMailSuccess] = useState(null);
+  const [mailError, setMailError] = useState(null);
+  const [emailSettings, setEmailSettings] = useState({ provider: 'brevo', brevo_configured: false, senders: [] });
+  const [senderDraft, setSenderDraft] = useState({ sender_email: '', sender_name: '', reply_to_email: '' });
+  const [editingSenderId, setEditingSenderId] = useState(null);
+  const [providerTestRecipient, setProviderTestRecipient] = useState('');
+  const [providerTestSending, setProviderTestSending] = useState(false);
 
   const loadUsers = useCallback(async () => {
     if (!isAdmin) return;
@@ -69,6 +92,81 @@ export function SettingsPage() {
   useEffect(() => {
     loadUsers();
   }, [loadUsers]);
+
+  const loadEmailSettings = useCallback(async () => {
+    if (!isAdmin) return;
+    setEmailSettingsLoading(true);
+    setMailError(null);
+    try {
+      const providerSettings = await getEmailSettings();
+      setEmailSettings(providerSettings || { provider: 'brevo', brevo_configured: false, senders: [] });
+    } catch (err) {
+      setMailError(err?.message || 'Failed to load Brevo settings.');
+    } finally {
+      setEmailSettingsLoading(false);
+    }
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (activeTab === 'mail') loadEmailSettings();
+  }, [activeTab, loadEmailSettings]);
+
+  const handleSendProviderTestEmail = async (e) => {
+    e.preventDefault();
+    const recipient = providerTestRecipient.trim();
+    if (!recipient || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) {
+      setMailError('Enter a valid recipient email address.');
+      return;
+    }
+    setProviderTestSending(true);
+    setMailError(null);
+    setMailSuccess(null);
+    try {
+      const result = await sendTestEmail(recipient);
+      setMailSuccess(result?.message || 'Brevo accepted the test email request. Inbox delivery is not confirmed.');
+      setProviderTestRecipient('');
+    } catch (err) {
+      setMailError(err?.message || `Brevo could not accept the test email for ${recipient}.`);
+    } finally {
+      setProviderTestSending(false);
+    }
+  };
+
+  const addSenderIdentity = async (e) => {
+    e.preventDefault(); setMailError(null); setMailSuccess(null);
+    try {
+      const result = editingSenderId
+        ? await updateEmailSender(editingSenderId, senderDraft)
+        : await addEmailSender(senderDraft);
+      setMailSuccess(result?.message || (editingSenderId ? 'Sender identity updated.' : 'Sender identity added.'));
+      setSenderDraft({ sender_email: '', sender_name: '', reply_to_email: '' });
+      setEditingSenderId(null);
+      await loadEmailSettings();
+    } catch (err) { setMailError(err?.message || 'Could not add sender identity.'); }
+  };
+  const markSenderVerified = async (sender) => {
+    if (!window.confirm(`Check whether Brevo reports ${sender.sender_email} as active and verified. If Brevo cannot confirm it, the sender will remain inactive.`)) return;
+    try {
+      const result = await verifyEmailSender(sender.id);
+      setMailSuccess(result?.message || 'Sender marked verified.');
+      await loadEmailSettings();
+    } catch (err) {
+      const message = err?.message || 'Could not update sender verification status.';
+      await loadEmailSettings();
+      setMailError(message);
+    }
+  };
+  const changeSenderState = async (action, sender) => {
+    try {
+      const result = await action(sender.id);
+      setMailSuccess(result?.message || 'Sender settings updated.');
+      await loadEmailSettings();
+    } catch (err) {
+      const message = err?.message || 'Could not update sender settings.';
+      await loadEmailSettings();
+      setMailError(message);
+    }
+  };
 
   const openAddUser = () => {
     setForm(DEFAULT_USER_FORM);
@@ -103,7 +201,28 @@ export function SettingsPage() {
       setActionSuccess(`Staff account for ${form.full_name} created successfully.`);
       await loadUsers();
     } catch (err) {
-      setFormError(err?.message || 'Failed to create user account.');
+      if (err?.status === 409 && String(err.message).includes('Confirm restoration')) {
+        const email = form.email.trim();
+        const confirmed = window.confirm(
+          `A deleted account already uses ${email}. Restore the existing profile? Its original password and history will be preserved, and it will remain inactive until an administrator activates it.`
+        );
+        if (!confirmed) {
+          setFormError('Restoration canceled. The deleted account was not changed.');
+          return;
+        }
+        try {
+          const restored = await restoreUserAccount(email);
+          setFormOpen(false);
+          setActionSuccess(
+            `${restored.full_name} was restored as an inactive account. Activate it from the account list when access is approved.`
+          );
+          await loadUsers();
+        } catch (restoreError) {
+          setFormError(restoreError?.message || 'Failed to restore the deleted account.');
+        }
+      } else {
+        setFormError(err?.message || 'Failed to create user account.');
+      }
     } finally {
       setSaving(false);
     }
@@ -145,6 +264,39 @@ export function SettingsPage() {
     }
   };
 
+  const handleUnlock = async (targetUser) => {
+    setActionLoadingId(targetUser.id);
+    setError(null);
+    setActionSuccess(null);
+    try {
+      await unlockUserAccount(targetUser.id);
+      setActionSuccess(`Account for ${targetUser.full_name} unlocked successfully.`);
+      await loadUsers();
+    } catch (err) {
+      setError(err?.message || `Failed to unlock ${targetUser.full_name}'s account.`);
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    const targetUser = deleteTarget;
+    setActionLoadingId(targetUser.id);
+    setError(null);
+    setActionSuccess(null);
+    try {
+      await deleteUser(targetUser.id);
+      setDeleteTarget(null);
+      setActionSuccess(`Account for ${targetUser.full_name} was deleted successfully.`);
+      await loadUsers();
+    } catch (err) {
+      setError(err?.message || `Failed to delete ${targetUser.full_name}'s account.`);
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -166,6 +318,16 @@ export function SettingsPage() {
               }`}
             >
               Staff &amp; Permissions
+            </button>
+            <button
+              onClick={() => setActiveTab('mail')}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                activeTab === 'mail'
+                  ? 'bg-brand-600 text-white shadow-sm'
+                  : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              Mail Settings (Email)
             </button>
             <button
               onClick={() => setActiveTab('store')}
@@ -271,6 +433,7 @@ export function SettingsPage() {
                       users.map((u) => {
                         const isCurrent = currentUser?.id === u.id;
                         const isBusy = actionLoadingId === u.id;
+                        const isAccountLocked = u.account_locked === true || u.account_locked === 1;
                         return (
                           <tr key={u.id} className="hover:bg-slate-50/70 transition-colors">
                             <td className="py-3.5 px-5 font-medium text-slate-900">
@@ -304,6 +467,29 @@ export function SettingsPage() {
                               </Badge>
                             </td>
                             <td className="py-3.5 px-5 text-right">
+                              <div className="flex justify-end gap-2">
+                              {u.role === 'pharmacist' && isAccountLocked && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={isBusy}
+                                  onClick={() => handleUnlock(u)}
+                                >
+                                  {isBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Unlock'}
+                                </Button>
+                              )}
+                              {u.role !== 'admin' && (
+                                <Button
+                                  variant="danger"
+                                  size="sm"
+                                  icon={Trash2}
+                                  disabled={isBusy}
+                                  onClick={() => setDeleteTarget(u)}
+                                >
+                                  Delete
+                                </Button>
+                              )}
+                              {u.role === 'admin' && u.is_active ? null : (
                               <Button
                                 variant="outline"
                                 size="sm"
@@ -319,6 +505,8 @@ export function SettingsPage() {
                                   'Activate'
                                 )}
                               </Button>
+                              )}
+                              </div>
                             </td>
                           </tr>
                         );
@@ -330,6 +518,124 @@ export function SettingsPage() {
             )}
           </CardContent>
         </Card>
+      )}
+
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4" role="presentation">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-100" role="dialog" aria-modal="true" aria-labelledby="delete-account-title">
+            <h3 id="delete-account-title" className="text-base font-bold text-slate-900 mb-2">Delete staff account?</h3>
+            <p className="text-sm text-slate-700 mb-2">
+              Delete <strong>{deleteTarget.full_name}</strong> ({deleteTarget.email})?
+            </p>
+            <p className="text-sm text-rose-700 mb-5">
+              This retires the account and prevents future access. Historical business records and the staff identity attached to them are preserved.
+            </p>
+            <div className="flex justify-end gap-3">
+              <Button variant="outline" size="sm" disabled={actionLoadingId === deleteTarget.id} onClick={() => setDeleteTarget(null)}>
+                Cancel
+              </Button>
+              <Button variant="danger" size="sm" disabled={actionLoadingId === deleteTarget.id} onClick={handleDelete}>
+                {actionLoadingId === deleteTarget.id ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                Confirm Delete
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BREVO MAIL SETTINGS TAB */}
+      {activeTab === 'mail' && (
+        <div className="space-y-6">
+          {mailError && (
+            <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-sm flex items-center gap-2">
+              <AlertCircle className="w-5 h-5 shrink-0" />
+              <span>{mailError}</span>
+            </div>
+          )}
+
+          {mailSuccess && (
+            <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-sm flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+              <span>{mailSuccess}</span>
+            </div>
+          )}
+
+          <Card>
+            <CardContent className="p-6 space-y-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="font-semibold text-slate-900">Transactional Email Provider</h3>
+                  <p className="text-xs text-slate-500 mt-1">Selected provider: <strong className="uppercase">{emailSettings.provider}</strong> · Brevo API key {emailSettings.brevo_configured ? 'configured' : 'not configured'}</p>
+                </div>
+                <Badge variant={emailSettings.provider === 'brevo' && emailSettings.brevo_configured ? 'brand' : 'slate'} size="sm">
+                  {emailSettings.provider === 'brevo' ? 'Brevo selected' : 'Brevo only'}
+                </Badge>
+              </div>
+              {emailSettings.provider === 'brevo' && (
+                <p className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900">
+                  Brevo is the only transactional email provider. Verify each sender in Brevo before activation; MediShop checks its current status before every activation. API acceptance does not confirm inbox delivery.
+                </p>
+              )}
+              <form onSubmit={addSenderIdentity} className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+                <label className="text-xs font-semibold text-slate-600">Sender email<input required type="email" value={senderDraft.sender_email} onChange={e => setSenderDraft({...senderDraft, sender_email:e.target.value})} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal" /></label>
+                <label className="text-xs font-semibold text-slate-600">Display name<input required value={senderDraft.sender_name} onChange={e => setSenderDraft({...senderDraft, sender_name:e.target.value})} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal" /></label>
+                <label className="text-xs font-semibold text-slate-600">Reply-To (optional)<input type="email" value={senderDraft.reply_to_email} onChange={e => setSenderDraft({...senderDraft, reply_to_email:e.target.value})} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal" /></label>
+                <div className="flex gap-2"><Button type="submit" variant="primary" size="md">{editingSenderId ? 'Save sender' : 'Add sender'}</Button>{editingSenderId && <Button type="button" variant="outline" size="md" onClick={() => { setEditingSenderId(null); setSenderDraft({sender_email:'',sender_name:'',reply_to_email:''}); }}>Cancel</Button>}</div>
+              </form>
+              <div className="space-y-2">
+                {emailSettings.senders?.length ? emailSettings.senders.map(sender => (
+                  <div key={sender.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 p-3">
+                    <div><div className="text-sm font-semibold text-slate-800">{sender.sender_name} &lt;{sender.sender_email}&gt;</div><div className="text-xs text-slate-500">{sender.reply_to_email ? `Reply-To: ${sender.reply_to_email} · ` : ''}{sender.is_verified && sender.verification_method === 'brevo_api' ? 'Brevo API verified' : 'Unverified'}{sender.is_active ? ' · Active' : ''}{sender.disabled_at ? ' · Disabled' : ''}</div></div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="button" variant="outline" size="sm" onClick={() => { setEditingSenderId(sender.id); setSenderDraft({sender_email:sender.sender_email,sender_name:sender.sender_name,reply_to_email:sender.reply_to_email || ''}); }}>Edit</Button>
+                      {(sender.disabled_at || !sender.is_verified || !sender.is_active) && <Button type="button" variant="outline" size="sm" onClick={() => markSenderVerified(sender)}>Check Brevo verification</Button>}
+                      {sender.is_verified && !sender.is_active && <Button type="button" variant="outline" size="sm" onClick={() => changeSenderState(activateEmailSender, sender)}>{sender.disabled_at ? 'Enable' : 'Set active'}</Button>}
+                      {!sender.disabled_at && <Button type="button" variant="outline" size="sm" onClick={() => changeSenderState(disableEmailSender, sender)}>Disable</Button>}
+                    </div>
+                  </div>
+                )) : <p className="text-sm text-slate-500">No sender identities configured.</p>}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="p-6">
+              <div className="flex items-start gap-3 mb-4">
+                <div className="p-2.5 bg-brand-50 text-brand-600 rounded-xl"><Send className="w-5 h-5" /></div>
+                <div>
+                  <h3 className="font-semibold text-slate-900">Send Test Email</h3>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Sends through Brevo using the currently active verified sender identity.
+                    Provider acceptance does not confirm inbox delivery.
+                  </p>
+                </div>
+              </div>
+              <form onSubmit={handleSendProviderTestEmail} className="flex flex-col sm:flex-row gap-3 sm:items-end">
+                <label className="flex-1 text-xs font-semibold text-slate-700">
+                  Recipient email
+                  <input
+                    type="email"
+                    required
+                    value={providerTestRecipient}
+                    onChange={(event) => setProviderTestRecipient(event.target.value)}
+                    placeholder="admin@example.com"
+                    className="mt-1 w-full px-3 py-2 text-sm rounded-lg border border-slate-300 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 outline-none"
+                  />
+                </label>
+                <Button type="submit" variant="primary" size="md" disabled={providerTestSending || emailSettingsLoading} icon={providerTestSending ? Loader2 : Send}>
+                  {providerTestSending ? 'Sending test…' : 'Send Test Email'}
+                </Button>
+              </form>
+            </CardContent>
+          </Card>
+
+          <div className="flex justify-end">
+            <Button type="button" variant="outline" size="sm" onClick={loadEmailSettings}
+              disabled={emailSettingsLoading} icon={RefreshCw}>
+              Refresh sender settings
+            </Button>
+          </div>
+        </div>
       )}
 
       {/* STORE PROFILE TAB */}
@@ -523,6 +829,7 @@ export function SettingsPage() {
           </div>
         </div>
       )}
+
     </div>
   );
 }

@@ -15,6 +15,11 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException, status
 
+try:
+    import audit_service
+except ImportError:  # Allow imports from the repository root as well
+    import backend.audit_service as audit_service
+
 
 # ---------------------------------------------------------------------------
 # Suppliers Service
@@ -74,7 +79,14 @@ def supplier_get(engine: Engine, supplier_id: str) -> Dict[str, Any]:
         ) from exc
 
 
-def supplier_create(engine: Engine, payload: Dict[str, Any]) -> Dict[str, Any]:
+def supplier_create(
+    engine: Engine,
+    payload: Dict[str, Any],
+    *,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
     """Creates a new supplier."""
     name = str(payload.get("name") or "").strip()
     phone = str(payload.get("phone") or "").strip()
@@ -119,7 +131,28 @@ def supplier_create(engine: Engine, payload: Dict[str, Any]) -> Dict[str, Any]:
                 ),
                 {"id": supplier_id},
             ).mappings().first()
-            return dict(row)
+            result = dict(row)
+            audit_service.record_audit(
+                conn,
+                actor=actor,
+                action=audit_service.ACTION_SUPPLIER_CREATED,
+                module=audit_service.MODULE_PROCUREMENT,
+                entity_type="suppliers",
+                entity_id=supplier_id,
+                description=f"Created supplier '{result.get('name')}'",
+                new_values={
+                    "name": result.get("name"),
+                    "contact_person": result.get("contact_person"),
+                    "phone": audit_service.mask_phone(result.get("phone")),
+                    "email": audit_service.mask_email(result.get("email")),
+                    "gstin": result.get("gstin"),
+                    "drug_license_no": result.get("drug_license_no"),
+                    "is_active": result.get("is_active"),
+                },
+                ip_address=client_ip,
+                user_agent=user_agent,
+            )
+            return result
     except HTTPException:
         raise
     except Exception as exc:
@@ -129,14 +162,25 @@ def supplier_create(engine: Engine, payload: Dict[str, Any]) -> Dict[str, Any]:
         ) from exc
 
 
-def supplier_update(engine: Engine, supplier_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def supplier_update(
+    engine: Engine,
+    supplier_id: str,
+    payload: Dict[str, Any],
+    *,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
     """Partially updates a supplier."""
     try:
         with engine.begin() as conn:
             existing = conn.execute(
-                text("SELECT id FROM suppliers WHERE id = :id"),
+                text(
+                    "SELECT id, name, contact_person, phone, email, address, "
+                    "gstin, drug_license_no, is_active FROM suppliers WHERE id = :id"
+                ),
                 {"id": supplier_id},
-            ).first()
+            ).mappings().first()
             if not existing:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -176,7 +220,34 @@ def supplier_update(engine: Engine, supplier_id: str, payload: Dict[str, Any]) -
                 ),
                 {"id": supplier_id},
             ).mappings().first()
-            return dict(row)
+            result = dict(row)
+            if updates:
+                try:
+                    existing_map = dict(existing)
+                except (TypeError, ValueError):
+                    existing_map = {}
+                old_values = {key: existing_map.get(key) for key in updates}
+                new_values = {key: result.get(key) for key in updates}
+                if "phone" in old_values:
+                    old_values["phone"] = audit_service.mask_phone(old_values["phone"])
+                    new_values["phone"] = audit_service.mask_phone(new_values["phone"])
+                if "email" in old_values:
+                    old_values["email"] = audit_service.mask_email(old_values["email"])
+                    new_values["email"] = audit_service.mask_email(new_values["email"])
+                audit_service.record_audit(
+                    conn,
+                    actor=actor,
+                    action=audit_service.ACTION_SUPPLIER_UPDATED,
+                    module=audit_service.MODULE_PROCUREMENT,
+                    entity_type="suppliers",
+                    entity_id=supplier_id,
+                    description=f"Updated supplier '{result.get('name')}'",
+                    old_values=old_values,
+                    new_values=new_values,
+                    ip_address=client_ip,
+                    user_agent=user_agent,
+                )
+            return result
     except HTTPException:
         raise
     except Exception as exc:
@@ -186,12 +257,22 @@ def supplier_update(engine: Engine, supplier_id: str, payload: Dict[str, Any]) -
         ) from exc
 
 
-def supplier_delete(engine: Engine, supplier_id: str) -> Dict[str, Any]:
+def supplier_delete(
+    engine: Engine,
+    supplier_id: str,
+    *,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
     """Deletes a supplier if not referenced in batches or purchases."""
     try:
         with engine.begin() as conn:
             existing = conn.execute(
-                text("SELECT id FROM suppliers WHERE id = :id"),
+                text(
+                    "SELECT id, name, contact_person, phone, email, address, "
+                    "gstin, drug_license_no, is_active FROM suppliers WHERE id = :id"
+                ),
                 {"id": supplier_id},
             ).first()
             if not existing:
@@ -214,6 +295,31 @@ def supplier_delete(engine: Engine, supplier_id: str) -> Dict[str, Any]:
             conn.execute(
                 text("DELETE FROM suppliers WHERE id = :id"),
                 {"id": supplier_id},
+            )
+            try:
+                existing_map = dict(existing)
+            except (TypeError, ValueError):
+                existing_map = {}
+            audit_service.record_audit(
+                conn,
+                actor=actor,
+                action=audit_service.ACTION_SUPPLIER_DELETED,
+                module=audit_service.MODULE_PROCUREMENT,
+                entity_type="suppliers",
+                entity_id=supplier_id,
+                description=f"Deleted supplier '{existing_map.get('name') or supplier_id}'",
+                old_values={
+                    "name": existing_map.get("name"),
+                    "contact_person": existing_map.get("contact_person"),
+                    "phone": audit_service.mask_phone(existing_map.get("phone")),
+                    "email": audit_service.mask_email(existing_map.get("email")),
+                    "gstin": existing_map.get("gstin"),
+                    "drug_license_no": existing_map.get("drug_license_no"),
+                    "is_active": existing_map.get("is_active"),
+                },
+                new_values={"deleted": True},
+                ip_address=client_ip,
+                user_agent=user_agent,
             )
             return {"id": supplier_id, "deleted": True}
     except HTTPException:
@@ -285,7 +391,14 @@ def customer_get(engine: Engine, customer_id: str) -> Dict[str, Any]:
         ) from exc
 
 
-def customer_create(engine: Engine, payload: Dict[str, Any]) -> Dict[str, Any]:
+def customer_create(
+    engine: Engine,
+    payload: Dict[str, Any],
+    *,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
     """Creates a new customer."""
     name = str(payload.get("name") or "").strip()
     if not name:
@@ -334,7 +447,25 @@ def customer_create(engine: Engine, payload: Dict[str, Any]) -> Dict[str, Any]:
                 ),
                 {"id": customer_id},
             ).mappings().first()
-            return dict(row)
+            result = dict(row)
+            audit_service.record_audit(
+                conn,
+                actor=actor,
+                action=audit_service.ACTION_CUSTOMER_CREATED,
+                module=audit_service.MODULE_SALES,
+                entity_type="customers",
+                entity_id=customer_id,
+                description=f"Created customer '{result.get('name')}'",
+                new_values={
+                    "name": result.get("name"),
+                    "phone": audit_service.mask_phone(result.get("phone")),
+                    "email": audit_service.mask_email(result.get("email")),
+                    "doctor_name": result.get("doctor_name"),
+                },
+                ip_address=client_ip,
+                user_agent=user_agent,
+            )
+            return result
     except HTTPException:
         raise
     except IntegrityError as exc:
@@ -349,12 +480,23 @@ def customer_create(engine: Engine, payload: Dict[str, Any]) -> Dict[str, Any]:
         ) from exc
 
 
-def customer_update(engine: Engine, customer_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def customer_update(
+    engine: Engine,
+    customer_id: str,
+    payload: Dict[str, Any],
+    *,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
     """Partially updates a customer profile."""
     try:
         with engine.begin() as conn:
             existing = conn.execute(
-                text("SELECT id, phone FROM customers WHERE id = :id"),
+                text(
+                    "SELECT id, name, phone, email, address, doctor_name, "
+                    "allergies_or_notes FROM customers WHERE id = :id"
+                ),
                 {"id": customer_id},
             ).mappings().first()
             if not existing:
@@ -404,7 +546,34 @@ def customer_update(engine: Engine, customer_id: str, payload: Dict[str, Any]) -
                 ),
                 {"id": customer_id},
             ).mappings().first()
-            return dict(row)
+            result = dict(row)
+            if updates:
+                try:
+                    existing_map = dict(existing)
+                except (TypeError, ValueError):
+                    existing_map = {}
+                old_values = {key: existing_map.get(key) for key in updates}
+                new_values = {key: result.get(key) for key in updates}
+                if "phone" in old_values:
+                    old_values["phone"] = audit_service.mask_phone(old_values["phone"])
+                    new_values["phone"] = audit_service.mask_phone(new_values["phone"])
+                if "email" in old_values:
+                    old_values["email"] = audit_service.mask_email(old_values["email"])
+                    new_values["email"] = audit_service.mask_email(new_values["email"])
+                audit_service.record_audit(
+                    conn,
+                    actor=actor,
+                    action=audit_service.ACTION_CUSTOMER_UPDATED,
+                    module=audit_service.MODULE_SALES,
+                    entity_type="customers",
+                    entity_id=customer_id,
+                    description=f"Updated customer '{result.get('name')}'",
+                    old_values=old_values,
+                    new_values=new_values,
+                    ip_address=client_ip,
+                    user_agent=user_agent,
+                )
+            return result
     except HTTPException:
         raise
     except IntegrityError as exc:
@@ -419,12 +588,22 @@ def customer_update(engine: Engine, customer_id: str, payload: Dict[str, Any]) -
         ) from exc
 
 
-def customer_delete(engine: Engine, customer_id: str) -> Dict[str, Any]:
+def customer_delete(
+    engine: Engine,
+    customer_id: str,
+    *,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
     """Deletes a customer profile."""
     try:
         with engine.begin() as conn:
             existing = conn.execute(
-                text("SELECT id FROM customers WHERE id = :id"),
+                text(
+                    "SELECT id, name, phone, email, address, doctor_name, "
+                    "allergies_or_notes FROM customers WHERE id = :id"
+                ),
                 {"id": customer_id},
             ).first()
             if not existing:
@@ -436,6 +615,28 @@ def customer_delete(engine: Engine, customer_id: str) -> Dict[str, Any]:
             conn.execute(
                 text("DELETE FROM customers WHERE id = :id"),
                 {"id": customer_id},
+            )
+            try:
+                existing_map = dict(existing)
+            except (TypeError, ValueError):
+                existing_map = {}
+            audit_service.record_audit(
+                conn,
+                actor=actor,
+                action=audit_service.ACTION_CUSTOMER_DELETED,
+                module=audit_service.MODULE_SALES,
+                entity_type="customers",
+                entity_id=customer_id,
+                description=f"Deleted customer '{existing_map.get('name') or customer_id}'",
+                old_values={
+                    "name": existing_map.get("name"),
+                    "phone": audit_service.mask_phone(existing_map.get("phone")),
+                    "email": audit_service.mask_email(existing_map.get("email")),
+                    "doctor_name": existing_map.get("doctor_name"),
+                },
+                new_values={"deleted": True},
+                ip_address=client_ip,
+                user_agent=user_agent,
             )
             return {"id": customer_id, "deleted": True}
     except HTTPException:
@@ -578,7 +779,15 @@ def invoice_get(engine: Engine, invoice_id: str) -> Dict[str, Any]:
         ) from exc
 
 
-def invoice_create(engine: Engine, payload: Dict[str, Any], created_by: Optional[str] = None) -> Dict[str, Any]:
+def invoice_create(
+    engine: Engine,
+    payload: Dict[str, Any],
+    created_by: Optional[str] = None,
+    *,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Creates a new counter sale invoice atomically:
     1. Validates line items and locks batch stock with FOR UPDATE.
@@ -790,6 +999,33 @@ def invoice_create(engine: Engine, payload: Dict[str, Any], created_by: Optional
                     },
                 )
 
+            audit_service.record_audit(
+                conn,
+                actor=actor,
+                action=audit_service.ACTION_INVOICE_CREATED,
+                module=audit_service.MODULE_SALES,
+                entity_type="invoices",
+                entity_id=invoice_id,
+                description=(
+                    f"Created invoice {invoice_no} "
+                    f"({len(prepared_items)} item(s), net {net_amount})"
+                ),
+                new_values={
+                    "invoice_no": invoice_no,
+                    "customer_id": customer_id,
+                    "total_amount": running_total,
+                    "tax_amount": running_tax,
+                    "discount_amount": running_discount,
+                    "net_amount": net_amount,
+                    "payment_method": payment_method,
+                    "payment_status": payment_status,
+                    "item_count": len(prepared_items),
+                    "stock_updated": True,
+                },
+                ip_address=client_ip,
+                user_agent=user_agent,
+            )
+
         return invoice_get(engine, invoice_id)
     except HTTPException:
         raise
@@ -916,7 +1152,15 @@ def purchase_get(engine: Engine, purchase_id: str) -> Dict[str, Any]:
         ) from exc
 
 
-def purchase_create(engine: Engine, payload: Dict[str, Any], created_by: Optional[str] = None) -> Dict[str, Any]:
+def purchase_create(
+    engine: Engine,
+    payload: Dict[str, Any],
+    created_by: Optional[str] = None,
+    *,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Creates an inward purchase bill and updates stock:
     1. Validates supplier existence.
@@ -1168,6 +1412,33 @@ def purchase_create(engine: Engine, payload: Dict[str, Any], created_by: Optiona
                     },
                 )
 
+            audit_service.record_audit(
+                conn,
+                actor=actor,
+                action=audit_service.ACTION_PURCHASE_CREATED,
+                module=audit_service.MODULE_PROCUREMENT,
+                entity_type="purchases",
+                entity_id=purchase_id,
+                description=(
+                    f"Recorded purchase {invoice_no} "
+                    f"({len(prepared_items)} item(s), net {net_amount})"
+                ),
+                new_values={
+                    "invoice_no": invoice_no,
+                    "supplier_id": supplier_id,
+                    "purchase_date": purchase_date,
+                    "total_amount": running_total,
+                    "tax_amount": running_tax,
+                    "discount_amount": running_discount,
+                    "net_amount": net_amount,
+                    "payment_status": payment_status,
+                    "item_count": len(prepared_items),
+                    "stock_updated": True,
+                },
+                ip_address=client_ip,
+                user_agent=user_agent,
+            )
+
         return purchase_get(engine, purchase_id)
     except HTTPException:
         raise
@@ -1255,7 +1526,15 @@ def expense_list(
         ) from exc
 
 
-def expense_create(engine: Engine, payload: Dict[str, Any], created_by: Optional[str] = None) -> Dict[str, Any]:
+def expense_create(
+    engine: Engine,
+    payload: Dict[str, Any],
+    created_by: Optional[str] = None,
+    *,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
     """Creates a new store operating expense."""
     title = str(payload.get("title") or "").strip()
     category = str(payload.get("category") or "").strip()
@@ -1315,7 +1594,26 @@ def expense_create(engine: Engine, payload: Dict[str, Any], created_by: Optional
                 ),
                 {"id": expense_id},
             ).mappings().first()
-            return dict(row)
+            result = dict(row)
+            audit_service.record_audit(
+                conn,
+                actor=actor,
+                action=audit_service.ACTION_EXPENSE_CREATED,
+                module=audit_service.MODULE_FINANCE,
+                entity_type="expenses",
+                entity_id=expense_id,
+                description=f"Recorded expense '{result.get('title')}' ({result.get('category')})",
+                new_values={
+                    "title": result.get("title"),
+                    "category": result.get("category"),
+                    "amount": result.get("amount"),
+                    "expense_date": result.get("expense_date"),
+                    "payment_method": result.get("payment_method"),
+                },
+                ip_address=client_ip,
+                user_agent=user_agent,
+            )
+            return result
     except HTTPException:
         raise
     except Exception as exc:
@@ -1325,12 +1623,22 @@ def expense_create(engine: Engine, payload: Dict[str, Any], created_by: Optional
         ) from exc
 
 
-def expense_delete(engine: Engine, expense_id: str) -> Dict[str, Any]:
+def expense_delete(
+    engine: Engine,
+    expense_id: str,
+    *,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
     """Deletes an expense record."""
     try:
         with engine.begin() as conn:
             existing = conn.execute(
-                text("SELECT id FROM expenses WHERE id = :id"),
+                text(
+                    "SELECT id, title, category, amount, expense_date, "
+                    "payment_method, receipt_url, notes FROM expenses WHERE id = :id"
+                ),
                 {"id": expense_id},
             ).first()
             if not existing:
@@ -1342,6 +1650,31 @@ def expense_delete(engine: Engine, expense_id: str) -> Dict[str, Any]:
             conn.execute(
                 text("DELETE FROM expenses WHERE id = :id"),
                 {"id": expense_id},
+            )
+            try:
+                existing_map = dict(existing)
+            except (TypeError, ValueError):
+                existing_map = {}
+            audit_service.record_audit(
+                conn,
+                actor=actor,
+                action=audit_service.ACTION_EXPENSE_DELETED,
+                module=audit_service.MODULE_FINANCE,
+                entity_type="expenses",
+                entity_id=expense_id,
+                description=(
+                    f"Deleted expense '{existing_map.get('title') or expense_id}'"
+                ),
+                old_values={
+                    "title": existing_map.get("title"),
+                    "category": existing_map.get("category"),
+                    "amount": existing_map.get("amount"),
+                    "expense_date": existing_map.get("expense_date"),
+                    "payment_method": existing_map.get("payment_method"),
+                },
+                new_values={"deleted": True},
+                ip_address=client_ip,
+                user_agent=user_agent,
             )
             return {"id": expense_id, "deleted": True}
     except HTTPException:

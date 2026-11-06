@@ -50,10 +50,34 @@ CREATE TABLE IF NOT EXISTS profiles (
     role ENUM('admin', 'pharmacist') NOT NULL DEFAULT 'pharmacist',
     phone VARCHAR(50),
     is_active BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Failed-login security: consecutive failed password attempts and account lockout.
+    failed_login_attempts INT NOT NULL DEFAULT 0,
+    account_locked BOOLEAN NOT NULL DEFAULT FALSE,
+    locked_at DATETIME NULL DEFAULT NULL,
+    deleted_at DATETIME NULL DEFAULT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     CONSTRAINT uq_profiles_email UNIQUE (email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Admin-managed sender identities. Verification is an explicit administrator
+-- attestation that the address was verified in the selected mail provider.
+CREATE TABLE IF NOT EXISTS email_sender_identities (
+    id CHAR(36) NOT NULL,
+    sender_email VARCHAR(255) NOT NULL,
+    sender_name VARCHAR(255) NOT NULL,
+    reply_to_email VARCHAR(255) NULL,
+    is_verified BOOLEAN NOT NULL DEFAULT FALSE,
+    verification_method VARCHAR(32) NULL,
+    verified_at DATETIME NULL,
+    is_active BOOLEAN NOT NULL DEFAULT FALSE,
+    disabled_at DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_email_sender_identities_email (sender_email),
+    KEY idx_email_sender_active (is_active, is_verified, disabled_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------------------------
@@ -356,17 +380,42 @@ CREATE TABLE IF NOT EXISTS stock_movements (
 -- ------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS audit_logs (
     id CHAR(36) NOT NULL DEFAULT (UUID()),
+    -- Historical actor UUID. Intentionally NOT a foreign key: audit rows must
+    -- outlive profile deletion and must never be rewritten by cascaded actions.
     user_id CHAR(36),
     action VARCHAR(100) NOT NULL,
+    module VARCHAR(50) NOT NULL DEFAULT 'system',
     table_name VARCHAR(100) NOT NULL,
     record_id CHAR(36),
+    description VARCHAR(500),
+    -- Immutable actor snapshot, captured at write time.
+    actor_name VARCHAR(255),
+    actor_role VARCHAR(20),
     old_data JSON,
     new_data JSON,
     ip_address VARCHAR(45),
     user_agent TEXT,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------------------------
+-- Table 15: PASSWORD_RESETS
+-- Cryptographically secure password reset tokens (stores SHA-256 hash only).
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS password_resets (
+    id CHAR(36) NOT NULL DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    token_hash VARCHAR(255) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    used_at DATETIME NULL DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ip_address VARCHAR(45) NULL,
     PRIMARY KEY (id),
-    CONSTRAINT fk_audit_logs_user FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE SET NULL
+    KEY idx_password_resets_user_id (user_id),
+    KEY idx_password_resets_token_hash (token_hash),
+    KEY idx_password_resets_expires_at (expires_at),
+    CONSTRAINT fk_password_resets_user FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ==============================================================================
@@ -411,6 +460,9 @@ CREATE INDEX idx_stock_movements_ref ON stock_movements (reference_id);
 CREATE INDEX idx_expenses_date ON expenses (expense_date DESC);
 CREATE INDEX idx_audit_logs_user ON audit_logs (user_id, created_at DESC);
 CREATE INDEX idx_audit_logs_table ON audit_logs (table_name, record_id);
+CREATE INDEX idx_audit_logs_created ON audit_logs (created_at DESC);
+CREATE INDEX idx_audit_logs_module ON audit_logs (module, created_at DESC);
+CREATE INDEX idx_audit_logs_action ON audit_logs (action, created_at DESC);
 
 -- ==============================================================================
 -- DATABASE-LEVEL DEFENSE-IN-DEPTH TRIGGERS

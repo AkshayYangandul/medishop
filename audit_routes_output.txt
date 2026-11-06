@@ -1,0 +1,3 @@
+/api/audit-logs ['GET']
+/api/audit-logs/options ['GET']
+/api/audit-logs/{audit_id} ['GET']

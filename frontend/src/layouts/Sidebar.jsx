@@ -12,6 +12,7 @@ import {
   ShoppingCart,
   Receipt,
   FileBarChart,
+  FileText,
   Settings,
   X,
   Cross,
@@ -60,6 +61,7 @@ const navigationGroups = [
   {
     title: 'System',
     items: [
+      { name: 'Audit Logs', path: '/audit-logs', icon: FileText, roles: ['admin'] },
       { name: 'Settings', path: '/settings', icon: Settings, roles: ['admin'] },
     ],
   },

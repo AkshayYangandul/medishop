@@ -45,6 +45,11 @@ try:
 except ImportError:
     from backend.auth import hash_password
 
+try:
+    import audit_service
+except ImportError:  # Allow imports from the repository root as well
+    import backend.audit_service as audit_service
+
 logger = logging.getLogger("medishop.user_service")
 
 ADMIN_ROLE_MUTEX_NAME = "medishop_admin_role_mutex"
@@ -123,12 +128,16 @@ def update_user_role_or_status(
     actor_user_id: Optional[str] = None,
     client_ip: str = "127.0.0.1",
     user_agent: str = "MediShop-App",
+    actor: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Atomically updates a staff member's role and/or active status.
 
     Guarantees:
     • The profile update and its audit-log entry are committed together or not at all.
+    • Administrator accounts cannot be deactivated through this API: an active
+      administrator must remain active (its role may still be changed, subject to
+      the last-active-administrator protection below).
     • The last active administrator cannot be demoted or deactivated.
     • All concurrent callers are serialised through ``medishop_admin_role_mutex``.
     • The named lock is always released on the same connection that acquired it,
@@ -157,15 +166,15 @@ def update_user_role_or_status(
             active_admins = conn.execute(
                 text(
                     "SELECT id, role, is_active FROM profiles "
-                    "WHERE role = 'admin' AND is_active = TRUE FOR UPDATE"
+                    "WHERE role = 'admin' AND is_active = TRUE AND deleted_at IS NULL FOR UPDATE"
                 )
             ).mappings().all()
 
             # Lock the target profile row
             current_profile = conn.execute(
                 text(
-                    "SELECT id, role, is_active FROM profiles "
-                    "WHERE id = :id FOR UPDATE"
+                    "SELECT id, full_name, role, is_active FROM profiles "
+                    "WHERE id = :id AND deleted_at IS NULL FOR UPDATE"
                 ),
                 {"id": target_user_id},
             ).mappings().first()
@@ -181,6 +190,19 @@ def update_user_role_or_status(
             effective_is_active = (
                 new_is_active if new_is_active is not None else bool(current_profile["is_active"])
             )
+
+            # Administrator accounts must never be deactivated through the Panel
+            # Accounts API.  An active administrator stays active; its role may
+            # still be changed (subject to the last-active-administrator
+            # protection below), but flipping an administrator account to
+            # inactive is rejected outright regardless of how many other
+            # administrators exist.
+            if effective_role == "admin" and not effective_is_active:
+                trans.rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Forbidden: Administrator accounts cannot be deactivated.",
+                )
 
             # Last-admin protection
             is_currently_active_admin = (
@@ -207,29 +229,28 @@ def update_user_role_or_status(
             )
 
             # Audit log — same transaction; if this fails the profile update rolls back
-            audit_id = str(uuid.uuid4())
-            conn.execute(
-                text(
-                    "INSERT INTO audit_logs "
-                    "(id, user_id, action, table_name, record_id, old_data, new_data, ip_address, user_agent) "
-                    "VALUES (:audit_id, :actor_id, 'ROLE_OR_STATUS_CHANGE', 'profiles', :target_id, "
-                    ":old_data, :new_data, :ip, :ua)"
+            audit_id = audit_service.record_audit(
+                conn,
+                actor=actor,
+                actor_user_id=actor_user_id or None,
+                action=audit_service.ACTION_ROLE_OR_STATUS_CHANGE,
+                module=audit_service.MODULE_USERS,
+                entity_type="profiles",
+                entity_id=target_user_id,
+                description=(
+                    "Updated role/status for "
+                    f"'{current_profile.get('full_name') or target_user_id}'"
                 ),
-                {
-                    "audit_id": audit_id,
-                    "actor_id": actor_user_id or None,
-                    "target_id": target_user_id,
-                    "old_data": json.dumps({
-                        "role": current_profile["role"],
-                        "is_active": bool(current_profile["is_active"]),
-                    }),
-                    "new_data": json.dumps({
-                        "role": effective_role,
-                        "is_active": effective_is_active,
-                    }),
-                    "ip": client_ip,
-                    "ua": user_agent,
+                old_values={
+                    "role": current_profile["role"],
+                    "is_active": bool(current_profile["is_active"]),
                 },
+                new_values={
+                    "role": effective_role,
+                    "is_active": effective_is_active,
+                },
+                ip_address=client_ip,
+                user_agent=user_agent,
             )
 
             trans.commit()
@@ -316,7 +337,7 @@ def provision_initial_admin(
             existing_admins = conn.execute(
                 text(
                     "SELECT id, email FROM profiles "
-                    "WHERE role = 'admin' AND is_active = TRUE FOR UPDATE"
+                    "WHERE role = 'admin' AND is_active = TRUE AND deleted_at IS NULL FOR UPDATE"
                 )
             ).mappings().all()
 
@@ -334,8 +355,8 @@ def provision_initial_admin(
             # Lock the target profile row
             target_user = conn.execute(
                 text(
-                    "SELECT id, email, role, is_active FROM profiles "
-                    "WHERE email = :email FOR UPDATE"
+                    "SELECT id, full_name, email, role, is_active FROM profiles "
+                    "WHERE email = :email AND deleted_at IS NULL FOR UPDATE"
                 ),
                 {"email": target_email},
             ).mappings().first()
@@ -361,29 +382,30 @@ def provision_initial_admin(
             )
 
             # Audit record in the same transaction
-            conn.execute(
-                text(
-                    "INSERT INTO audit_logs "
-                    "(id, user_id, action, table_name, record_id, old_data, new_data, ip_address, user_agent) "
-                    "VALUES (:audit_id, :target_id, 'INITIAL_ADMIN_PROVISIONING', 'profiles', :target_id, "
-                    ":old_data, :new_data, :ip, :ua)"
-                ),
-                {
-                    "audit_id": audit_id,
-                    "target_id": target_id,
-                    "old_data": json.dumps({
-                        "role": target_user["role"],
-                        "is_active": bool(target_user["is_active"]),
-                    }),
-                    "new_data": json.dumps({
-                        "role": "admin",
-                        "is_active": True,
-                        "operation_id": operation_id,
-                        "notes": operator_notes,
-                    }),
-                    "ip": client_ip,
-                    "ua": user_agent,
+            audit_id = audit_service.record_audit(
+                conn,
+                actor={
+                    "id": target_id,
+                    "full_name": target_user.get("full_name"),
+                    "role": target_user.get("role"),
                 },
+                action=audit_service.ACTION_INITIAL_ADMIN_PROVISIONING,
+                module=audit_service.MODULE_USERS,
+                entity_type="profiles",
+                entity_id=target_id,
+                description=f"Provisioned initial administrator '{target_email}'",
+                old_values={
+                    "role": target_user["role"],
+                    "is_active": bool(target_user["is_active"]),
+                },
+                new_values={
+                    "role": "admin",
+                    "is_active": True,
+                    "operation_id": operation_id,
+                    "notes": operator_notes,
+                },
+                ip_address=client_ip,
+                user_agent=user_agent,
             )
 
             commit_attempted = True
@@ -443,16 +465,27 @@ def provision_initial_admin(
 
 
 def user_list(engine: Engine) -> list:
-    """Returns all profiles (user accounts) for administration."""
+    """Returns all non-deleted profiles for account administration.
+
+    Includes failed-login lockout state so authorized administrators can see
+    and act on locked accounts.
+    """
     try:
         with engine.begin() as conn:
             rows = conn.execute(
                 text(
-                    "SELECT id, email, full_name, role, phone, is_active, created_at, updated_at "
-                    "FROM profiles ORDER BY created_at ASC"
+                "SELECT id, email, full_name, role, phone, is_active, "
+                    "failed_login_attempts, account_locked, locked_at, created_at, updated_at "
+                "FROM profiles WHERE deleted_at IS NULL ORDER BY created_at ASC"
                 )
             ).mappings().all()
-            return [dict(row) for row in rows]
+            profiles = [dict(row) for row in rows]
+            for profile in profiles:
+                # Raw SQL text results return MySQL BOOLEAN/TINYINT values as
+                # integers; emit actual JSON booleans for frontend consumers.
+                profile["is_active"] = bool(profile.get("is_active"))
+                profile["account_locked"] = bool(profile.get("account_locked"))
+            return profiles
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -460,7 +493,348 @@ def user_list(engine: Engine) -> list:
         ) from exc
 
 
-def user_create(engine: Engine, payload: Dict[str, Any], created_by: Optional[str] = None) -> Dict[str, Any]:
+def unlock_user_account(
+    engine: Engine,
+    target_user_id: str,
+    actor_user_id: Optional[str] = None,
+    client_ip: str = "127.0.0.1",
+    user_agent: str = "MediShop-App",
+    actor: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Unlocks a locked user account and resets its failed-login counter.
+
+    Performed inside a single transaction with a row lock:
+    1. Find the target profile (HTTP 404 when missing).
+    2. Clear ``account_locked`` and ``locked_at``.
+    3. Reset ``failed_login_attempts`` to zero.
+    4. Commit.
+
+    The user's role, active status, password, and unrelated profile fields are
+    never touched. Unlocking an already-unlocked account is a safe no-op that
+    still returns the current account state.
+
+    Requires the caller to have already been authorized as an administrator by
+    the route dependency (``require_active_admin``); this function performs no
+    role check itself.
+    """
+    if not target_user_id or not str(target_user_id).strip():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User profile not found.",
+        )
+
+    target_user_id = str(target_user_id).strip()
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                "SELECT id, full_name, email, role, account_locked, "
+                "failed_login_attempts, locked_at "
+                "FROM profiles WHERE id = :id FOR UPDATE"
+            ),
+            {"id": target_user_id},
+        ).mappings().first()
+
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User profile not found.",
+            )
+
+        already_unlocked = not bool(row["account_locked"])
+
+        if not already_unlocked:
+            conn.execute(
+                text(
+                    "UPDATE profiles "
+                    "SET account_locked = FALSE, failed_login_attempts = 0, locked_at = NULL, updated_at = NOW() "
+                    "WHERE id = :id"
+                ),
+                {"id": target_user_id},
+            )
+
+            # Immutable audit record for the unlock action.
+            audit_id = audit_service.record_audit(
+                conn,
+                actor=actor,
+                actor_user_id=actor_user_id or None,
+                action=audit_service.ACTION_ACCOUNT_UNLOCK,
+                module=audit_service.MODULE_USERS,
+                entity_type="profiles",
+                entity_id=target_user_id,
+                description=(
+                    "Unlocked account for "
+                    f"'{row.get('full_name') or row.get('email') or target_user_id}'"
+                ),
+                old_values={
+                    "account_locked": True,
+                    "failed_login_attempts": int(row["failed_login_attempts"] or 0),
+                    "locked_at": str(row["locked_at"]) if row["locked_at"] is not None else None,
+                },
+                new_values={
+                    "account_locked": False,
+                    "failed_login_attempts": 0,
+                    "locked_at": None,
+                },
+                ip_address=client_ip,
+                user_agent=user_agent,
+            )
+
+    return {
+        "id": target_user_id,
+        "account_locked": False,
+        "failed_login_attempts": 0,
+        "locked_at": None,
+        "status": "unlocked",
+        "already_unlocked": already_unlocked,
+        "audit_id": audit_id if not already_unlocked else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# delete_user_account
+# ---------------------------------------------------------------------------
+
+# Keep profiles as historical actor identities. Business tables and audit logs
+# continue referencing the original row; only credentials/access are retired.
+def delete_user_account(
+    engine: Engine,
+    target_user_id: str,
+    actor_user_id: Optional[str] = None,
+    client_ip: str = "127.0.0.1",
+    user_agent: str = "MediShop-App",
+    actor: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Soft-deletes a staff account without removing its historical identity.
+
+    Safeguards (all enforced inside one explicit transaction while holding the
+    administrative named lock):
+    • 404 when the target profile does not exist.
+    • 403 when an administrator targets their own account.
+    • 403 when the target is the last active administrator.
+    • Preserve all business and audit references by retaining the profile row.
+    • Mark it deleted/inactive, lock it, reset failed-login state, and remove
+      transient password-reset tokens.
+    • The profile update and audit entry commit together or roll back
+      together.
+
+    Requires the caller to have already been authorized as an active
+    administrator by the route dependency (``require_active_admin``).
+    """
+    if not target_user_id or not str(target_user_id).strip():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User profile not found.",
+        )
+
+    target_user_id = str(target_user_id).strip()
+    actor_id = str(actor_user_id).strip() if actor_user_id else None
+
+    with engine.connect() as conn:
+        _acquire_lock(conn, ADMIN_ROLE_MUTEX_NAME, MUTEX_TIMEOUT_SECONDS)
+
+        trans = conn.begin()
+        try:
+            # Verify existence and lock the target row.
+            target = conn.execute(
+                text(
+                    "SELECT id, email, full_name, role, is_active "
+                    "FROM profiles WHERE id = :id AND deleted_at IS NULL FOR UPDATE"
+                ),
+                {"id": target_user_id},
+            ).mappings().first()
+
+            if not target:
+                trans.rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="User profile not found.",
+                )
+
+            # Self-deletion is never allowed.
+            if actor_id is not None and target_user_id == actor_id:
+                trans.rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Forbidden: You cannot delete your own account.",
+                )
+
+            # Always retain at least one active administrator.
+            if target["role"] == "admin" and bool(target["is_active"]):
+                active_admins = conn.execute(
+                    text(
+                        "SELECT id FROM profiles "
+                        "WHERE role = 'admin' AND is_active = TRUE "
+                        "AND deleted_at IS NULL FOR UPDATE"
+                    )
+                ).mappings().all()
+                if len(active_admins) <= 1:
+                    trans.rollback()
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=(
+                            "Forbidden: Cannot delete the last active "
+                            "administrator."
+                        ),
+                    )
+
+            # Reset tokens are ephemeral credentials, not business history.
+            conn.execute(
+                text("DELETE FROM password_resets WHERE user_id = :id"),
+                {"id": target_user_id},
+            )
+
+            conn.execute(
+                text(
+                    "UPDATE profiles SET deleted_at = NOW(), is_active = FALSE, "
+                    "account_locked = TRUE, failed_login_attempts = 0, locked_at = NULL, "
+                    "updated_at = NOW() WHERE id = :id AND deleted_at IS NULL"
+                ),
+                {"id": target_user_id},
+            )
+
+            # Audit record in the same transaction.  Audit entries are
+            # immutable and only ever inserted; this one records the acting
+            # administrator and the deleted account's non-sensitive identity.
+            audit_id = audit_service.record_audit(
+                conn,
+                actor=actor,
+                actor_user_id=actor_id,
+                action=audit_service.ACTION_ACCOUNT_DELETE,
+                module=audit_service.MODULE_USERS,
+                entity_type="profiles",
+                entity_id=target_user_id,
+                description=(
+                    "Soft-deleted account for "
+                    f"'{target.get('full_name') or audit_service.mask_email(target.get('email')) or target_user_id}'"
+                ),
+                old_values={
+                    "email": audit_service.mask_email(target.get("email")),
+                    "full_name": target.get("full_name"),
+                    "role": target.get("role"),
+                    "is_active": bool(target.get("is_active")),
+                },
+                new_values={"deleted": True, "is_active": False, "account_locked": True},
+                ip_address=client_ip,
+                user_agent=user_agent,
+            )
+
+            trans.commit()
+
+            return {
+                "id": target_user_id,
+                "email": target["email"],
+                "status": "deleted",
+                "audit_id": audit_id,
+            }
+
+        except HTTPException:
+            if trans.is_active:
+                trans.rollback()
+            raise
+        except Exception as exc:
+            if trans.is_active:
+                trans.rollback()
+            logger.error(
+                "Database error during account deletion (target_user_id=%s): %s",
+                target_user_id, exc,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="An internal database error occurred while deleting the user profile.",
+            )
+        finally:
+            _release_lock(conn, ADMIN_ROLE_MUTEX_NAME)
+
+
+def restore_user_account(
+    engine: Engine,
+    email: str,
+    *,
+    actor_user_id: str,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: str = "127.0.0.1",
+    user_agent: str = "MediShop-App",
+) -> Dict[str, Any]:
+    """Restores a soft-deleted profile without enabling login or changing its password."""
+    clean_email = str(email or "").strip().lower()
+    if not clean_email or "@" not in clean_email:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A valid email address is required.",
+        )
+
+    with engine.begin() as conn:
+        profile = conn.execute(
+            text(
+                "SELECT id, email, full_name, role, deleted_at FROM profiles "
+                "WHERE LOWER(email) = :email FOR UPDATE"
+            ),
+            {"email": clean_email},
+        ).mappings().first()
+
+        if not profile:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No deleted account exists for this email address.",
+            )
+        if profile["deleted_at"] is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An active account already uses this email address.",
+            )
+
+        conn.execute(
+            text(
+                "UPDATE profiles SET deleted_at = NULL, is_active = FALSE, "
+                "account_locked = FALSE, failed_login_attempts = 0, locked_at = NULL, "
+                "updated_at = NOW() WHERE id = :id AND deleted_at IS NOT NULL"
+            ),
+            {"id": profile["id"]},
+        )
+
+        audit_id = audit_service.record_audit(
+            conn,
+            actor=actor,
+            actor_user_id=actor_user_id,
+            action=audit_service.ACTION_ACCOUNT_RESTORE,
+            module=audit_service.MODULE_USERS,
+            entity_type="profiles",
+            entity_id=profile["id"],
+            description=f"Restored soft-deleted account for '{profile['full_name']}'; account remains inactive",
+            old_values={"deleted": True},
+            new_values={
+                "deleted": False,
+                "is_active": False,
+                "account_locked": False,
+                "failed_login_attempts": 0,
+            },
+            ip_address=client_ip,
+            user_agent=user_agent,
+        )
+
+    return {
+        "id": profile["id"],
+        "email": profile["email"],
+        "full_name": profile["full_name"],
+        "role": profile["role"],
+        "is_active": False,
+        "status": "restored",
+        "audit_id": audit_id,
+    }
+
+
+def user_create(
+    engine: Engine,
+    payload: Dict[str, Any],
+    created_by: Optional[str] = None,
+    *,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Creates a new user profile with hashed password.
     Validates email uniqueness and valid role ('admin', 'pharmacist').
@@ -498,10 +872,18 @@ def user_create(engine: Engine, payload: Dict[str, Any], created_by: Optional[st
     try:
         with engine.begin() as conn:
             existing = conn.execute(
-                text("SELECT id FROM profiles WHERE LOWER(email) = LOWER(:email)"),
+                text("SELECT id, deleted_at FROM profiles WHERE LOWER(email) = LOWER(:email)"),
                 {"email": email},
-            ).first()
+            ).mappings().first()
             if existing:
+                if existing["deleted_at"] is not None:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            "A deleted account already uses this email address. "
+                            "Confirm restoration to reuse it."
+                        ),
+                    )
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="A user with this email address already exists.",
@@ -530,7 +912,27 @@ def user_create(engine: Engine, payload: Dict[str, Any], created_by: Optional[st
                 ),
                 {"user_id": user_id},
             ).mappings().first()
-            return dict(row)
+            result = dict(row)
+            audit_service.record_audit(
+                conn,
+                actor=actor,
+                actor_user_id=created_by,
+                action=audit_service.ACTION_USER_CREATED,
+                module=audit_service.MODULE_USERS,
+                entity_type="profiles",
+                entity_id=user_id,
+                description=f"Created user account for '{result.get('full_name') or email}'",
+                new_values={
+                    "email": audit_service.mask_email(result.get("email")),
+                    "full_name": result.get("full_name"),
+                    "role": result.get("role"),
+                    "phone": audit_service.mask_phone(result.get("phone")),
+                    "is_active": result.get("is_active"),
+                },
+                ip_address=client_ip,
+                user_agent=user_agent,
+            )
+            return result
     except HTTPException:
         raise
     except Exception as exc:

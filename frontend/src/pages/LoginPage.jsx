@@ -1,4 +1,4 @@
-import { useNavigate, Navigate } from 'react-router-dom';
+import { useNavigate, Navigate, Link } from 'react-router-dom';
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -131,9 +131,9 @@ export function LoginPage() {
                 />
                 <span>Remember this terminal</span>
               </label>
-              <span className="text-brand-600 hover:underline cursor-pointer">
+              <Link to="/forgot-password" className="text-brand-600 hover:underline">
                 Forgot password?
-              </span>
+              </Link>
             </div>
 
             {/* Submit Button */}

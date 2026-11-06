@@ -1,0 +1,10 @@
+database=medishop
+audit_rows_before=15
+columns=id:char(36), user_id:char(36), action:varchar(100), module:varchar(50), table_name:varchar(100), record_id:char(36), description:varchar(500), actor_name:varchar(255), actor_role:varchar(20), old_data:json, new_data:json, ip_address:varchar(45), user_agent:text, created_at:datetime
+triggers=trg_audit_logs_no_delete:BEFORE:DELETE, trg_audit_logs_no_update:BEFORE:UPDATE
+user_id_foreign_keys=none
+transactional_insert={'module': 'system', 'description': 'Temporary transactional verification row', 'actor_name': 'Verification Actor', 'actor_role': 'admin', 'new_data': '{"ok": true, "password": "[REDACTED]"}'}
+immutability_update=BLOCKED (OperationalError)
+audit_rows_after_rollback=15
+deletion_survival_profile_count=0
+deletion_survival_audit={'user_id': '4685e012-f190-4d3f-9efb-439025882325', 'actor_name': 'Deletion Actor', 'actor_role': 'pharmacist'}

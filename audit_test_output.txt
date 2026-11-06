@@ -1,0 +1,26 @@
+test_admin_is_allowed (test_audit_logs.TestAuditApiSecurity.test_admin_is_allowed) ... ok
+test_audit_routes_are_read_only (test_audit_logs.TestAuditApiSecurity.test_audit_routes_are_read_only) ... ok
+test_authentication_required (test_audit_logs.TestAuditApiSecurity.test_authentication_required) ... ok
+test_pharmacist_is_forbidden (test_audit_logs.TestAuditApiSecurity.test_pharmacist_is_forbidden) ... ok
+test_detail_decodes_old_and_new_json (test_audit_logs.TestAuditReadService.test_detail_decodes_old_and_new_json) ... ok
+test_list_applies_filters_and_caps_pagination (test_audit_logs.TestAuditReadService.test_list_applies_filters_and_caps_pagination) ... ok
+test_missing_detail_returns_none (test_audit_logs.TestAuditReadService.test_missing_detail_returns_none) ... ok
+test_options_returns_modules_actions_and_historical_actors (test_audit_logs.TestAuditReadService.test_options_returns_modules_actions_and_historical_actors) ... ok
+test_actor_snapshot_uses_live_database_fields (test_audit_logs.TestAuditSanitisation.test_actor_snapshot_uses_live_database_fields) ... ok
+test_pii_masking_helpers (test_audit_logs.TestAuditSanitisation.test_pii_masking_helpers) ... ok
+test_record_audit_redacts_and_returns_id (test_audit_logs.TestAuditSanitisation.test_record_audit_redacts_and_returns_id) ... ok
+test_recursive_secret_redaction (test_audit_logs.TestAuditSanitisation.test_recursive_secret_redaction) ... ok
+test_fifth_failure_audits_lock (test_audit_logs.TestLoginAudit.test_fifth_failure_audits_lock) ... ok
+test_login_failure_is_audited (test_audit_logs.TestLoginAudit.test_login_failure_is_audited) ... ok
+test_login_success_is_audited (test_audit_logs.TestLoginAudit.test_login_success_is_audited) ... ok
+test_unknown_email_failure_is_audited_without_actor (test_audit_logs.TestLoginAudit.test_unknown_email_failure_is_audited_without_actor) ... ok
+test_expense_create_and_delete_write_audits (test_audit_logs.TestModuleAuditIntegration.test_expense_create_and_delete_write_audits) ... ok
+test_invoice_create_writes_summary_audit (test_audit_logs.TestModuleAuditIntegration.test_invoice_create_writes_summary_audit) ... ok
+test_medicine_create_writes_audit_in_same_connection (test_audit_logs.TestModuleAuditIntegration.test_medicine_create_writes_audit_in_same_connection) ... ok
+test_purchase_create_writes_summary_audit (test_audit_logs.TestModuleAuditIntegration.test_purchase_create_writes_summary_audit) ... ok
+test_user_create_never_stores_password_hash (test_audit_logs.TestModuleAuditIntegration.test_user_create_never_stores_password_hash) ... ok
+
+----------------------------------------------------------------------
+Ran 21 tests in 8.834s
+
+OK

@@ -19,7 +19,11 @@
  * place the token is read/written and never log it.
  */
 
-const API_BASE_URL = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+const API_BASE_URL = (
+  typeof import.meta !== 'undefined' && import.meta && import.meta.env && import.meta.env.VITE_API_URL
+    ? import.meta.env.VITE_API_URL
+    : ''
+).replace(/\/+$/, '');
 
 const TOKEN_KEY = 'medishop_access_token';
 
@@ -407,12 +411,88 @@ export async function createUser(data) {
   return apiRequest('/api/users', { method: 'POST', body: data });
 }
 
+export async function restoreUserAccount(email) {
+  return apiRequest('/api/users/restore', { method: 'POST', body: { email } });
+}
+
 export async function updateUserRole(userId, role) {
   return apiRequest(`/api/users/${userId}/role`, { method: 'PATCH', body: { role } });
 }
 
 export async function updateUserStatus(userId, isActive) {
   return apiRequest(`/api/users/${userId}/status`, { method: 'PATCH', body: { is_active: isActive } });
+}
+
+/**
+ * Unlocks a locked staff account and resets its failed-login counter.
+ * POST /api/users/{userId}/unlock
+ * Requires an authenticated active administrator (enforced by the backend).
+ */
+export async function unlockUserAccount(userId) {
+  return apiRequest(`/api/users/${userId}/unlock`, { method: 'POST' });
+}
+
+/**
+ * Soft-deletes an eligible staff account while retaining its historical identity.
+ * DELETE /api/users/{userId}
+ * Requires an authenticated active administrator (enforced by the backend).
+ * The backend refuses self-deletion and deleting the last active administrator.
+ * Business records and audit history are retained.
+ */
+export async function deleteUser(userId) {
+  return apiRequest(`/api/users/${userId}`, { method: 'DELETE' });
+}
+
+// ---------------------------------------------------------------------------
+// Audit Logs API functions (active administrators only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns a paginated, filtered audit-log list plus global summary stats.
+ * GET /api/audit-logs
+ */
+export async function getAuditLogs({
+  search,
+  module,
+  action,
+  userId,
+  entityType,
+  entityId,
+  startDate,
+  endDate,
+  page,
+  limit,
+} = {}) {
+  const params = new URLSearchParams();
+  if (search) params.set('search', search);
+  if (module) params.set('module', module);
+  if (action) params.set('action', action);
+  if (userId) params.set('user_id', userId);
+  if (entityType) params.set('entity_type', entityType);
+  if (entityId) params.set('entity_id', entityId);
+  if (startDate) params.set('start_date', startDate);
+  if (endDate) params.set('end_date', endDate);
+  if (page) params.set('page', String(page));
+  if (limit) params.set('limit', String(limit));
+
+  const queryString = params.toString();
+  return apiRequest(`/api/audit-logs${queryString ? `?${queryString}` : ''}`);
+}
+
+/**
+ * Returns one audit entry with sanitized old/new value snapshots.
+ * GET /api/audit-logs/{auditId}
+ */
+export async function getAuditLogById(auditId) {
+  return apiRequest(`/api/audit-logs/${auditId}`);
+}
+
+/**
+ * Returns distinct modules, actions, and actors for audit filter dropdowns.
+ * GET /api/audit-logs/options
+ */
+export async function getAuditLogOptions() {
+  return apiRequest('/api/audit-logs/options');
 }
 
 // ---------------------------------------------------------------------------
@@ -429,4 +509,77 @@ export async function getReportsSummary({ startDate, endDate } = {}) {
   if (endDate) params.set('end_date', endDate);
   const queryString = params.toString();
   return apiRequest(`/api/reports/summary${queryString ? `?${queryString}` : ''}`);
+}
+
+// ---------------------------------------------------------------------------
+// Password reset API functions
+// ---------------------------------------------------------------------------
+
+/**
+ * Requests a password reset email for the given address.
+ * POST /api/auth/forgot-password
+ * Always returns a generic success message regardless of whether the email is registered.
+ */
+export async function requestPasswordReset(email) {
+  return apiRequest('/api/auth/forgot-password', {
+    method: 'POST',
+    body: { email },
+  });
+}
+
+/**
+ * Verifies that a reset token is valid, unexpired, and unused.
+ * POST /api/auth/verify-reset-token
+ * Returns { valid: true, email: "masked@domain.com" } on success.
+ * Throws ApiError 400 when invalid/expired/used.
+ */
+export async function verifyResetToken(token) {
+  return apiRequest('/api/auth/verify-reset-token', {
+    method: 'POST',
+    body: { token },
+  });
+}
+
+/**
+ * Resets the user's password using a valid single-use token.
+ * POST /api/auth/reset-password
+ * @param {string} token  - The raw reset token from the URL.
+ * @param {string} newPassword  - The new password (min 6 characters).
+ */
+export async function resetPassword({ token, newPassword }) {
+  return apiRequest('/api/auth/reset-password', {
+    method: 'POST',
+    body: { token, new_password: newPassword },
+  });
+}
+
+// ---------------------------------------------------------------------------
+/** Sends a test message through the Brevo-only transactional dispatcher. */
+export async function sendTestEmail(recipientEmail) {
+  return apiRequest('/api/admin/email-settings/test', {
+    method: 'POST',
+    body: { recipient_email: recipientEmail },
+  });
+}
+
+// Brevo provider and admin-managed sender identities. Secrets remain server-side.
+export async function getEmailSettings() {
+  return apiRequest('/api/admin/email-settings');
+}
+export async function addEmailSender(data) {
+  return apiRequest('/api/admin/email-senders', { method: 'POST', body: data });
+}
+export async function updateEmailSender(id, data) {
+  return apiRequest(`/api/admin/email-senders/${encodeURIComponent(id)}`, { method: 'PUT', body: data });
+}
+export async function verifyEmailSender(id) {
+  return apiRequest(`/api/admin/email-senders/${encodeURIComponent(id)}/verify`, {
+    method: 'POST', body: { confirm_brevo_verified: true },
+  });
+}
+export async function activateEmailSender(id) {
+  return apiRequest(`/api/admin/email-senders/${encodeURIComponent(id)}/activate`, { method: 'POST' });
+}
+export async function disableEmailSender(id) {
+  return apiRequest(`/api/admin/email-senders/${encodeURIComponent(id)}/disable`, { method: 'POST' });
 }

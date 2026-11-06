@@ -1,0 +1,9 @@
+INFO: Column audit_logs.module already exists ù skipping.
+INFO: Column audit_logs.description already exists ù skipping.
+INFO: Column audit_logs.actor_name already exists ù skipping.
+INFO: Column audit_logs.actor_role already exists ù skipping.
+INFO: No profiles foreign key on audit_logs.user_id ù skipping.
+INFO: Index idx_audit_logs_created already exists ù skipping.
+INFO: Index idx_audit_logs_module already exists ù skipping.
+INFO: Index idx_audit_logs_action already exists ù skipping.
+INFO: Migration complete. No changes required (already up to date).

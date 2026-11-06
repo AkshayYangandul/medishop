@@ -433,9 +433,9 @@ class TestUpdateUserRoleOrStatus(unittest.TestCase):
             result = MagicMock()
             if "GET_LOCK" in sql:
                 result.scalar.return_value = 1
-            elif "WHERE role = 'admin' AND is_active = TRUE FOR UPDATE" in sql:
+            elif "WHERE role = 'admin' AND is_active = TRUE" in sql:
                 result.mappings.return_value.all.return_value = active_admins
-            elif "WHERE id = :id FOR UPDATE" in sql:
+            elif "WHERE id = :id" in sql and "FOR UPDATE" in sql:
                 result.mappings.return_value.first.return_value = target_profile
             return result
 
@@ -468,6 +468,69 @@ class TestUpdateUserRoleOrStatus(unittest.TestCase):
 
         release_calls = [s for s, _ in conn._executed if "RELEASE_LOCK" in s]
         self.assertGreaterEqual(len(release_calls), 1)
+
+    def test_sole_admin_deactivation_uses_admin_protection_message(self):
+        """Deactivating the sole active administrator is rejected as an admin deactivation."""
+        engine, conn = self._build_engine_for_scenario(
+            active_admins=[{"id": "a1", "role": "admin", "is_active": 1}],
+            target_profile={"id": "a1", "role": "admin", "is_active": 1},
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            update_user_role_or_status(engine, "a1", new_is_active=False)
+        self.assertEqual(ctx.exception.status_code, 403)
+        self.assertIn("Administrator accounts cannot be deactivated", ctx.exception.detail)
+
+        release_calls = [s for s, _ in conn._executed if "RELEASE_LOCK" in s]
+        self.assertGreaterEqual(len(release_calls), 1, "RELEASE_LOCK must be called in finally")
+
+    def test_active_admin_deactivation_rejected_with_multiple_admins(self):
+        """An active administrator cannot be deactivated even when other admins exist."""
+        engine, conn = self._build_engine_for_scenario(
+            active_admins=[
+                {"id": "a1", "role": "admin", "is_active": 1},
+                {"id": "a2", "role": "admin", "is_active": 1},
+            ],
+            target_profile={"id": "a1", "role": "admin", "is_active": 1},
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            update_user_role_or_status(engine, "a1", new_is_active=False, actor_user_id="a2")
+        self.assertEqual(ctx.exception.status_code, 403)
+        self.assertIn("Administrator accounts cannot be deactivated", ctx.exception.detail)
+
+        release_calls = [s for s, _ in conn._executed if "RELEASE_LOCK" in s]
+        self.assertGreaterEqual(len(release_calls), 1, "RELEASE_LOCK must be called in finally")
+
+    def test_admin_deactivation_rejected_via_combined_update(self):
+        """Setting an administrator to inactive (role + status) is rejected outright."""
+        engine, conn = self._build_engine_for_scenario(
+            active_admins=[
+                {"id": "a1", "role": "admin", "is_active": 1},
+                {"id": "a2", "role": "admin", "is_active": 1},
+            ],
+            target_profile={"id": "a1", "role": "admin", "is_active": 1},
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            update_user_role_or_status(
+                engine,
+                "a1",
+                new_role="admin",
+                new_is_active=False,
+                actor_user_id="a2",
+            )
+        self.assertEqual(ctx.exception.status_code, 403)
+        self.assertIn("Administrator accounts cannot be deactivated", ctx.exception.detail)
+
+    def test_non_admin_deactivation_allowed(self):
+        """A pharmacist account can still be deactivated by an administrator."""
+        engine, conn = self._build_engine_for_scenario(
+            active_admins=[{"id": "a1", "role": "admin", "is_active": 1}],
+            target_profile={"id": "p1", "role": "pharmacist", "is_active": 1},
+        )
+        result = update_user_role_or_status(engine, "p1", new_is_active=False, actor_user_id="a1")
+        self.assertEqual(result["status"], "updated")
+        self.assertEqual(result["role"], "pharmacist")
+        self.assertEqual(result["is_active"], False)
+        self.assertIn("audit_id", result)
 
     def test_demotion_allowed_with_two_admins(self):
         engine, conn = self._build_engine_for_scenario(
@@ -625,9 +688,9 @@ class TestProvisionInitialAdmin(unittest.TestCase):
             result = MagicMock()
             if "GET_LOCK" in sql:
                 result.scalar.return_value = lock_return
-            elif "WHERE role = 'admin' AND is_active = TRUE FOR UPDATE" in sql:
+            elif "WHERE role = 'admin' AND is_active = TRUE" in sql:
                 result.mappings.return_value.all.return_value = existing_admins
-            elif "WHERE email = :email FOR UPDATE" in sql:
+            elif "WHERE email = :email" in sql and "FOR UPDATE" in sql:
                 result.mappings.return_value.first.return_value = target_user
             return result
 

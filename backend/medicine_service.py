@@ -21,6 +21,11 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException, status
 
+try:
+    import audit_service
+except ImportError:  # Allow imports from the repository root as well
+    import backend.audit_service as audit_service
+
 
 DOSAGE_FORMS = (
     "Tablet",
@@ -163,7 +168,14 @@ def medicine_get(engine: Engine, medicine_id: str) -> Dict[str, Any]:
         ) from exc
 
 
-def medicine_create(engine: Engine, payload: Dict[str, Any]) -> Dict[str, Any]:
+def medicine_create(
+    engine: Engine,
+    payload: Dict[str, Any],
+    *,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Creates a new medicine. Raises HTTP 422 when the category does not exist.
     """
@@ -236,7 +248,27 @@ def medicine_create(engine: Engine, payload: Dict[str, Any]) -> Dict[str, Any]:
                 {"medicine_id": medicine_id},
             ).mappings().first()
 
-            return dict(row)
+            result = dict(row)
+            audit_service.record_audit(
+                conn,
+                actor=actor,
+                action=audit_service.ACTION_MEDICINE_CREATED,
+                module=audit_service.MODULE_INVENTORY,
+                entity_type="medicines",
+                entity_id=medicine_id,
+                description=f"Created medicine '{result.get('name')}'",
+                new_values={
+                    key: result.get(key)
+                    for key in (
+                        "name", "generic_name", "category_id", "brand_id",
+                        "dosage_form", "strength", "unit", "hsn_code",
+                        "requires_prescription", "min_stock_alert", "is_active",
+                    )
+                },
+                ip_address=client_ip,
+                user_agent=user_agent,
+            )
+            return result
     except HTTPException:
         raise
     except Exception as exc:
@@ -246,7 +278,15 @@ def medicine_create(engine: Engine, payload: Dict[str, Any]) -> Dict[str, Any]:
         ) from exc
 
 
-def medicine_update(engine: Engine, medicine_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def medicine_update(
+    engine: Engine,
+    medicine_id: str,
+    payload: Dict[str, Any],
+    *,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Partially updates a medicine. Supports deactivation via ``is_active: False``.
     Raises HTTP 404 when the medicine does not exist.
@@ -262,6 +302,15 @@ def medicine_update(engine: Engine, medicine_id: str, payload: Dict[str, Any]) -
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Medicine not found.",
                 )
+
+            old_row = conn.execute(
+                text(
+                    "SELECT name, generic_name, category_id, brand_id, dosage_form, "
+                    "strength, unit, hsn_code, requires_prescription, min_stock_alert, is_active "
+                    "FROM medicines WHERE id = :medicine_id"
+                ),
+                {"medicine_id": medicine_id},
+            ).first()
 
             if payload.get("dosage_form") is not None and _invalid_dosage_form(payload.get("dosage_form")):
                 raise HTTPException(
@@ -323,7 +372,38 @@ def medicine_update(engine: Engine, medicine_id: str, payload: Dict[str, Any]) -
             if not row:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Medicine not found.")
 
-            return dict(row)
+            result = dict(row)
+            if updates:
+                old_values = {}
+                try:
+                    existing_map = dict(old_row)
+                except (TypeError, ValueError):
+                    existing_map = {}
+                for key in updates:
+                    old_values[key] = existing_map.get(key)
+                action = (
+                    audit_service.ACTION_MEDICINE_DEACTIVATED
+                    if updates.get("is_active") is False
+                    else audit_service.ACTION_MEDICINE_UPDATED
+                )
+                audit_service.record_audit(
+                    conn,
+                    actor=actor,
+                    action=action,
+                    module=audit_service.MODULE_INVENTORY,
+                    entity_type="medicines",
+                    entity_id=medicine_id,
+                    description=(
+                        f"Deactivated medicine '{result.get('name')}'"
+                        if action == audit_service.ACTION_MEDICINE_DEACTIVATED
+                        else f"Updated medicine '{result.get('name')}'"
+                    ),
+                    old_values=old_values,
+                    new_values={key: result.get(key) for key in updates},
+                    ip_address=client_ip,
+                    user_agent=user_agent,
+                )
+            return result
     except HTTPException:
         raise
     except Exception as exc:
@@ -403,7 +483,14 @@ def medicine_inventory(engine: Engine, medicine_id: str) -> Dict[str, Any]:
 # Lookup collections
 # ---------------------------------------------------------------------------
 
-def medicine_batch_create(engine: Engine, payload: Dict[str, Any]) -> Dict[str, Any]:
+def medicine_batch_create(
+    engine: Engine,
+    payload: Dict[str, Any],
+    *,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Creates a new medicine batch (stock intake).
 
@@ -510,7 +597,27 @@ def medicine_batch_create(engine: Engine, payload: Dict[str, Any]) -> Dict[str, 
                 {"batch_id": batch_id},
             ).mappings().first()
 
-            return dict(batch)
+            result = dict(batch)
+            audit_service.record_audit(
+                conn,
+                actor=actor,
+                action=audit_service.ACTION_BATCH_CREATED,
+                module=audit_service.MODULE_INVENTORY,
+                entity_type="batches",
+                entity_id=batch_id,
+                description=f"Created batch '{result.get('batch_no')}'",
+                new_values={
+                    key: result.get(key)
+                    for key in (
+                        "medicine_id", "supplier_id", "batch_no", "mfg_date",
+                        "expiry_date", "purchase_cost", "mrp", "selling_price",
+                        "initial_quantity", "current_quantity",
+                    )
+                },
+                ip_address=client_ip,
+                user_agent=user_agent,
+            )
+            return result
     except HTTPException:
         raise
     except IntegrityError as exc:
@@ -616,7 +723,14 @@ def _slugify(name: str) -> str:
     return slug or "category"
 
 
-def medicine_category_create(engine: Engine, payload: Dict[str, Any]) -> Dict[str, Any]:
+def medicine_category_create(
+    engine: Engine,
+    payload: Dict[str, Any],
+    *,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Creates a new medicine category.
 
@@ -681,7 +795,23 @@ def medicine_category_create(engine: Engine, payload: Dict[str, Any]) -> Dict[st
                 {"category_id": category_id},
             ).mappings().first()
 
-            return dict(row)
+            result = dict(row)
+            audit_service.record_audit(
+                conn,
+                actor=actor,
+                action=audit_service.ACTION_CATEGORY_CREATED,
+                module=audit_service.MODULE_CATALOGUE,
+                entity_type="categories",
+                entity_id=category_id,
+                description=f"Created category '{result.get('name')}'",
+                new_values={
+                    key: result.get(key)
+                    for key in ("name", "slug", "description", "storage_temperature")
+                },
+                ip_address=client_ip,
+                user_agent=user_agent,
+            )
+            return result
     except HTTPException:
         raise
     except IntegrityError as exc:
@@ -709,7 +839,15 @@ def medicine_category_create(engine: Engine, payload: Dict[str, Any]) -> Dict[st
         ) from exc
 
 
-def medicine_category_update(engine: Engine, category_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def medicine_category_update(
+    engine: Engine,
+    category_id: str,
+    payload: Dict[str, Any],
+    *,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Partially updates a medicine category.
 
@@ -726,6 +864,14 @@ def medicine_category_update(engine: Engine, category_id: str, payload: Dict[str
             ).first()
             if not existing:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found.")
+
+            old_row = conn.execute(
+                text(
+                    "SELECT name, slug, description, storage_temperature "
+                    "FROM categories WHERE id = :category_id"
+                ),
+                {"category_id": category_id},
+            ).first()
 
             updates: Dict[str, Any] = {}
             if "name" in payload and payload["name"] is not None:
@@ -789,7 +935,26 @@ def medicine_category_update(engine: Engine, category_id: str, payload: Dict[str
                 {"category_id": category_id},
             ).mappings().first()
 
-            return dict(row)
+            result = dict(row)
+            if updates:
+                try:
+                    existing_map = dict(old_row)
+                except (TypeError, ValueError):
+                    existing_map = {}
+                audit_service.record_audit(
+                    conn,
+                    actor=actor,
+                    action=audit_service.ACTION_CATEGORY_UPDATED,
+                    module=audit_service.MODULE_CATALOGUE,
+                    entity_type="categories",
+                    entity_id=category_id,
+                    description=f"Updated category '{result.get('name')}'",
+                    old_values={key: existing_map.get(key) for key in updates},
+                    new_values={key: result.get(key) for key in updates},
+                    ip_address=client_ip,
+                    user_agent=user_agent,
+                )
+            return result
     except HTTPException:
         raise
     except IntegrityError as exc:
@@ -814,7 +979,14 @@ def medicine_category_update(engine: Engine, category_id: str, payload: Dict[str
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An internal error occurred while updating the category.") from exc
 
 
-def medicine_category_delete(engine: Engine, category_id: str) -> Dict[str, Any]:
+def medicine_category_delete(
+    engine: Engine,
+    category_id: str,
+    *,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Deletes a medicine category.
 
@@ -830,6 +1002,14 @@ def medicine_category_delete(engine: Engine, category_id: str) -> Dict[str, Any]
             if not existing:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found.")
 
+            old_row = conn.execute(
+                text(
+                    "SELECT name, slug, description, storage_temperature "
+                    "FROM categories WHERE id = :category_id"
+                ),
+                {"category_id": category_id},
+            ).first()
+
             referenced = conn.execute(
                 text("SELECT id FROM medicines WHERE category_id = :category_id LIMIT 1"),
                 {"category_id": category_id},
@@ -843,6 +1023,26 @@ def medicine_category_delete(engine: Engine, category_id: str) -> Dict[str, Any]
             conn.execute(
                 text("DELETE FROM categories WHERE id = :category_id"),
                 {"category_id": category_id},
+            )
+            try:
+                existing_map = dict(old_row)
+            except (TypeError, ValueError):
+                existing_map = {}
+            audit_service.record_audit(
+                conn,
+                actor=actor,
+                action=audit_service.ACTION_CATEGORY_DELETED,
+                module=audit_service.MODULE_CATALOGUE,
+                entity_type="categories",
+                entity_id=category_id,
+                description=f"Deleted category '{existing_map.get('name') or category_id}'",
+                old_values={
+                    key: existing_map.get(key)
+                    for key in ("name", "slug", "description", "storage_temperature")
+                },
+                new_values={"deleted": True},
+                ip_address=client_ip,
+                user_agent=user_agent,
             )
             return {"id": category_id, "deleted": True}
     except HTTPException:
@@ -869,7 +1069,14 @@ def medicine_category_delete(engine: Engine, category_id: str) -> Dict[str, Any]
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An internal error occurred while deleting the category.") from exc
 
 
-def medicine_brand_create(engine: Engine, payload: Dict[str, Any]) -> Dict[str, Any]:
+def medicine_brand_create(
+    engine: Engine,
+    payload: Dict[str, Any],
+    *,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Creates a new medicine brand.
 
@@ -920,7 +1127,25 @@ def medicine_brand_create(engine: Engine, payload: Dict[str, Any]) -> Dict[str, 
                 {"brand_id": brand_id},
             ).mappings().first()
 
-            return dict(row)
+            result = dict(row)
+            audit_service.record_audit(
+                conn,
+                actor=actor,
+                action=audit_service.ACTION_BRAND_CREATED,
+                module=audit_service.MODULE_CATALOGUE,
+                entity_type="brands",
+                entity_id=brand_id,
+                description=f"Created brand '{result.get('name')}'",
+                new_values={
+                    "name": result.get("name"),
+                    "manufacturer": result.get("manufacturer"),
+                    "contact_email": audit_service.mask_email(result.get("contact_email")),
+                    "contact_phone": audit_service.mask_phone(result.get("contact_phone")),
+                },
+                ip_address=client_ip,
+                user_agent=user_agent,
+            )
+            return result
     except HTTPException:
         raise
     except IntegrityError as exc:
@@ -939,7 +1164,15 @@ def medicine_brand_create(engine: Engine, payload: Dict[str, Any]) -> Dict[str, 
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An internal error occurred while creating the brand.") from exc
 
 
-def medicine_brand_update(engine: Engine, brand_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def medicine_brand_update(
+    engine: Engine,
+    brand_id: str,
+    payload: Dict[str, Any],
+    *,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Partially updates a medicine brand.
 
@@ -955,6 +1188,14 @@ def medicine_brand_update(engine: Engine, brand_id: str, payload: Dict[str, Any]
             ).first()
             if not existing:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Brand not found.")
+
+            old_row = conn.execute(
+                text(
+                    "SELECT name, manufacturer, contact_email, contact_phone "
+                    "FROM brands WHERE id = :brand_id"
+                ),
+                {"brand_id": brand_id},
+            ).first()
 
             updates: Dict[str, Any] = {}
             if payload.get("name") is not None:
@@ -990,7 +1231,34 @@ def medicine_brand_update(engine: Engine, brand_id: str, payload: Dict[str, Any]
                 {"brand_id": brand_id},
             ).mappings().first()
 
-            return dict(row)
+            result = dict(row)
+            if updates:
+                try:
+                    existing_map = dict(old_row)
+                except (TypeError, ValueError):
+                    existing_map = {}
+                old_values = {key: existing_map.get(key) for key in updates}
+                new_values = {key: result.get(key) for key in updates}
+                if "contact_email" in old_values:
+                    old_values["contact_email"] = audit_service.mask_email(old_values["contact_email"])
+                    new_values["contact_email"] = audit_service.mask_email(new_values["contact_email"])
+                if "contact_phone" in old_values:
+                    old_values["contact_phone"] = audit_service.mask_phone(old_values["contact_phone"])
+                    new_values["contact_phone"] = audit_service.mask_phone(new_values["contact_phone"])
+                audit_service.record_audit(
+                    conn,
+                    actor=actor,
+                    action=audit_service.ACTION_BRAND_UPDATED,
+                    module=audit_service.MODULE_CATALOGUE,
+                    entity_type="brands",
+                    entity_id=brand_id,
+                    description=f"Updated brand '{result.get('name')}'",
+                    old_values=old_values,
+                    new_values=new_values,
+                    ip_address=client_ip,
+                    user_agent=user_agent,
+                )
+            return result
     except HTTPException:
         raise
     except IntegrityError as exc:
@@ -1009,7 +1277,14 @@ def medicine_brand_update(engine: Engine, brand_id: str, payload: Dict[str, Any]
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An internal error occurred while updating the brand.") from exc
 
 
-def medicine_brand_delete(engine: Engine, brand_id: str) -> Dict[str, Any]:
+def medicine_brand_delete(
+    engine: Engine,
+    brand_id: str,
+    *,
+    actor: Optional[Dict[str, Any]] = None,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Deletes a medicine brand.
 
@@ -1025,6 +1300,14 @@ def medicine_brand_delete(engine: Engine, brand_id: str) -> Dict[str, Any]:
             if not existing:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Brand not found.")
 
+            old_row = conn.execute(
+                text(
+                    "SELECT name, manufacturer, contact_email, contact_phone "
+                    "FROM brands WHERE id = :brand_id"
+                ),
+                {"brand_id": brand_id},
+            ).first()
+
             referenced = conn.execute(
                 text("SELECT id FROM medicines WHERE brand_id = :brand_id LIMIT 1"),
                 {"brand_id": brand_id},
@@ -1035,6 +1318,28 @@ def medicine_brand_delete(engine: Engine, brand_id: str) -> Dict[str, Any]:
             conn.execute(
                 text("DELETE FROM brands WHERE id = :brand_id"),
                 {"brand_id": brand_id},
+            )
+            try:
+                existing_map = dict(old_row)
+            except (TypeError, ValueError):
+                existing_map = {}
+            audit_service.record_audit(
+                conn,
+                actor=actor,
+                action=audit_service.ACTION_BRAND_DELETED,
+                module=audit_service.MODULE_CATALOGUE,
+                entity_type="brands",
+                entity_id=brand_id,
+                description=f"Deleted brand '{existing_map.get('name') or brand_id}'",
+                old_values={
+                    "name": existing_map.get("name"),
+                    "manufacturer": existing_map.get("manufacturer"),
+                    "contact_email": audit_service.mask_email(existing_map.get("contact_email")),
+                    "contact_phone": audit_service.mask_phone(existing_map.get("contact_phone")),
+                },
+                new_values={"deleted": True},
+                ip_address=client_ip,
+                user_agent=user_agent,
             )
             return {"id": brand_id, "deleted": True}
     except HTTPException:

@@ -86,6 +86,26 @@ class TestLoginEndpoint(unittest.TestCase):
         self.assertEqual(result["user"]["email"], "pharmacist@medishop.local")
         self.assertEqual(result["user"]["role"], "pharmacist")
 
+    def test_active_administrator_can_log_in(self):
+        """The deleted_at lookup filter keeps ordinary active admins eligible."""
+        admin_profile = {
+            **VALID_PROFILE,
+            "id": "admin-1",
+            "email": "admin@medishop.local",
+            "role": "admin",
+        }
+        conn = _make_conn_with_profile(admin_profile)
+
+        with patch.object(main, "engine", _make_engine_with_conn(conn)), patch.object(
+            main, "verify_password", return_value=True
+        ):
+            result = main.login(
+                LoginRequest(email="admin@medishop.local", password="password123")
+            )
+
+        self.assertEqual(result["user"]["id"], "admin-1")
+        self.assertEqual(result["user"]["role"], "admin")
+
     def test_invalid_credentials_return_401(self):
         """Wrong password (or unknown email) must yield HTTP 401, not a token."""
         conn = _make_conn_with_profile(VALID_PROFILE)

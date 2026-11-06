@@ -1,0 +1,53 @@
+...................s.......Error during initial admin provisioning (op_id=13d133fd-38f1-4b05-8c37-9317f64cb4ce): Network timeout during commit
+............Database error during role/status update (target_user_id=a1): Simulated audit_logs write failure
+...C:\Users\akshay yangandul\Desktop\medishop\backend\test_admin_protection.py:387: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  update_user_role_or_status(MagicMock(), "uid", new_role="superadmin")
+..RELEASE_LOCK('medishop_admin_role_mutex') failed ù invalidating connection to prevent pool contamination: Simulated RELEASE_LOCK failure
+........................................SMTP delivery skipped: SMTP_HOST is not configured in the environment. Password reset email could not be delivered to a*@b.com. Set SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASSWORD in backend/.env
+.Operational error delivering password reset email to d**t@example.com: ConnectionRefusedError
+.....C:\Users\akshay yangandul\Desktop\medishop\backend\test_forgot_password.py:312: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  return execute_password_reset(engine, token, new_password, client_ip="1.2.3.4")
+......Account-based password reset rate limit reached for user_id=u1 (5 requests in 15 min)
+.Database error during password reset request: Exception
+.Password reset email delivery failed for masked recipient s***f@clinic.com; invalidating undelivered token to prevent orphaned reset links.
+...IP-based password reset rate limit reached for ip=1.2.3.4 (15 requests in 15 min)
+...............................Account lockout alert NOT delivered to p********t@medishop.local; check SMTP configuration and server logs.
+.....Login security warning NOT delivered to p********t@medishop.local (failed_attempts=3); check SMTP configuration and server logs.
+..s.Operational error delivering login security warning to n*********r@example.com: ConnectionRefusedError
+Operational error delivering account lockout alert to a**********r@example.com: ConnectionRefusedError
+.....C:\Users\akshay yangandul\Desktop\medishop\backend\test_medicine.py:395: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  medicine_service.medicine_batch_create(_make_engine_with_conn(self._conn_for_batch()), payload)
+..C:\Users\akshay yangandul\Desktop\medishop\backend\test_medicine.py:385: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  medicine_service.medicine_batch_create(_make_engine_with_conn(self._conn_for_batch()), payload)
+...C:\Users\akshay yangandul\Desktop\medishop\backend\test_medicine.py:401: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  medicine_service.medicine_batch_create(_make_engine_with_conn(self._conn_for_batch()), payload)
+....C:\Users\akshay yangandul\Desktop\medishop\backend\test_medicine.py:650: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  medicine_service.medicine_brand_create(_make_engine_with_conn(), {"name": "  "})
+................C:\Users\akshay yangandul\Desktop\medishop\backend\test_medicine.py:537: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  medicine_service.medicine_category_create(
+........C:\Users\akshay yangandul\Desktop\medishop\backend\test_medicine.py:197: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  medicine_service.medicine_create(
+.C:\Users\akshay yangandul\Desktop\medishop\backend\test_medicine.py:209: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  medicine_service.medicine_create(
+.................C:\Users\akshay yangandul\Desktop\medishop\backend\test_modules.py:271: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  sales_service.expense_create(engine, {"title": "Rent", "category": "Utilities", "amount": 0})
+....C:\Users\akshay yangandul\Desktop\medishop\backend\test_modules.py:237: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  sales_service.purchase_create(engine, payload, created_by="user-1")
+.C:\Users\akshay yangandul\Desktop\medishop\backend\test_modules.py:211: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  sales_service.purchase_create(engine, {"supplier_id": ""})
+.C:\Users\akshay yangandul\Desktop\medishop\backend\test_modules.py:262: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  sales_service.purchase_create(engine, payload, created_by="user-1")
+.C:\Users\akshay yangandul\Desktop\medishop\backend\test_modules.py:44: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  sales_service.supplier_create(engine, {"name": "", "phone": "1234567890"})
+....C:\Users\akshay yangandul\Desktop\medishop\backend\test_modules.py:311: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  user_service.user_create(engine, {"email": "invalid", "password": "secretpassword", "full_name": "Test"})
+....................C:\Users\akshay yangandul\Desktop\medishop\backend\test_role_permissions.py:200: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  user_service.user_create(engine, payload)
+C:\Users\akshay yangandul\AppData\Local\Python\pythoncore-3.14-64\Lib\unittest\case.py:615: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  result = method()
+.......Database error during account deletion (target_user_id=target-1): simulated audit insert failure
+.......
+----------------------------------------------------------------------
+Ran 242 tests in 7.661s
+
+OK (skipped=2)
